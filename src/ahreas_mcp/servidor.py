@@ -44,16 +44,37 @@ mcp: FastMCP[Any] = FastMCP(
     name="Ahreas",
     auth=_auth(),
     instructions=(
-        "ERP Ahreas (condomínios). O catálogo de métodos vem do WSDL da própria "
-        "instalação, então os nomes são os que este Ahreas publica. Comece por "
-        "listar_funcionalidades para achar o método pela intenção (ex.: "
-        "'inadimplência', 'boleto', 'lançamento'). Chame descrever_metodo antes "
-        "de executar_metodo: é ela que diz os parâmetros, o formato de data e se "
-        "o método lê ou grava. Datas vão como AAAA-MM-DDT00:00:00; vários "
-        "relatórios aceitam mes e ano como números no lugar. 'Sem dados no "
-        "período' e 'sem acesso a esta função' (módulo não contratado) são "
-        "respostas legítimas, não erros a contornar. Execução que grava no ERP "
-        "exige confirmar=true, e antes disso mostre à pessoa o que vai rodar."
+        "ERP Ahreas, para administração de condomínios. Este servidor faz o que "
+        "uma pessoa faz no Ahreas — consultar relatórios financeiros e operar as "
+        "telas do painel (importar consumo de gás/água, emitir boletos, lançar, "
+        "etc.). Tudo é lido da própria instalação; nada é fixo no código.\n"
+        "\n"
+        "COMO AGIR, SEMPRE: primeiro DESCUBRA, depois DESCREVA, depois EXECUTE. "
+        "Nunca invente um nome de método ou caminho de tela — descubra pela "
+        "intenção da pessoa.\n"
+        "\n"
+        "HÁ DUAS SUPERFÍCIES, escolha pela tarefa:\n"
+        "1) MÉTODOS (web service, dados prontos e rápidos): relatórios e consultas "
+        "financeiras — inadimplência, contas a pagar, fluxo de caixa, boletos, "
+        "vencimentos. Fluxo: listar_funcionalidades(busca) → descrever_metodo(nome) "
+        "→ executar_metodo(nome, parametros).\n"
+        "2) TELAS (o painel web, faz tudo que o operador faz): quando não há método, "
+        "ou quando a pessoa quer OPERAR (importar, emitir, cadastrar, processar). "
+        "Fluxo: listar_telas(busca) → descrever_tela(caminho) → executar_acao_tela "
+        "(caminho, acao, campos). Para subir arquivo (ex.: leitura de gás/água), "
+        "use importar_arquivo_em_tela.\n"
+        "\n"
+        "EXEMPLO — 'quero individualizar o consumo de gás e água': isto é operar "
+        "uma tela. Chame listar_telas('consumo'), ache 'Importação de Controle de "
+        "Consumo', e use importar_arquivo_em_tela com o arquivo de leituras.\n"
+        "\n"
+        "REGRAS: consulta roda direto; qualquer coisa que ALTERE o ERP (executar "
+        "método de escrita, acionar uma tela que grava, processar uma importação) "
+        "exige confirmar=true, e antes disso mostre à pessoa exatamente o que vai "
+        "rodar. 'Sem dados no período', 'sem acesso a esta função' (módulo não "
+        "contratado) e 'precisa_confirmar' são respostas legítimas, não erros a "
+        "contornar. Datas de método vão como AAAA-MM-DDT00:00:00; muitos relatórios "
+        "aceitam mês e ano como números."
     ),
 )
 
@@ -112,7 +133,13 @@ async def listar_funcionalidades(
     apenas_leitura: Annotated[bool, "Só métodos de consulta, sem os que gravam."] = False,
     limite: Annotated[int, "Quantos devolver."] = 40,
 ) -> dict[str, Any]:
-    """Acha métodos do Ahreas pela intenção, lidos do WSDL desta instalação."""
+    """Passo 1 para RELATÓRIOS e CONSULTAS financeiras rápidas (web service).
+
+    Use quando a pessoa quer DADOS: inadimplência, contas a pagar, fluxo de caixa,
+    boletos, vencimentos, lançamentos. Busque pela intenção dela (ex.: 'boleto',
+    'inadimplencia') e depois chame descrever_metodo no que achar. Para OPERAR o
+    Ahreas como no painel (importar consumo, emitir, cadastrar), use listar_telas.
+    """
     encontrados = await wsdl.buscar(busca)
     if apenas_leitura:
         encontrados = [m for m in encontrados if efeito(m.nome) is Efeito.LEITURA]
@@ -348,7 +375,14 @@ async def listar_telas(
     busca: Annotated[str | None, "Texto no nome da tela (ex.: 'consumo', 'boleto')."] = None,
     limite: Annotated[int, "Quantas devolver."] = 40,
 ) -> dict[str, Any]:
-    """Acha telas do Ahreas web pela intenção, lidas do menu desta instalação."""
+    """Passo 1 para OPERAR o Ahreas como no painel web (383 telas da instalação).
+
+    Use quando a pessoa quer FAZER algo que se faz na tela: importar leitura de
+    consumo (gás/água), emitir boleto, lançar, cadastrar, processar emissão,
+    gerar remessa — ou quando listar_funcionalidades não achou um método para a
+    consulta. Busque pela intenção (ex.: 'consumo', 'boleto', 'emissão') e chame
+    descrever_tela no caminho que achar para ver os campos e as ações.
+    """
     from ahreas_mcp.telas import catalogo
 
     sessao = await _sessao_web()
@@ -455,9 +489,12 @@ async def importar_arquivo_em_tela(
 ) -> dict[str, Any]:
     """Sobe um arquivo numa tela de importação e, com confirmação, processa.
 
-    Sem confirmar, apenas envia o arquivo e devolve o que a tela reconheceu (por
-    exemplo, os códigos de tarifa que ela preencheu) — sem gravar. Com
-    confirmar=true e escrita liberada, aciona o processamento, que grava no ERP.
+    É a ferramenta do fluxo de gás/água: na tela 'Importação de Controle de
+    Consumo', envia o arquivo de leituras. Primeiro chame SEM confirmar — o
+    arquivo é enviado e a tela o reconhece (o próprio Ahreas preenche os códigos
+    de tarifa de água/gás do condomínio), sem gravar nada; mostre isso à pessoa.
+    Só depois do sim dela, chame de novo com confirmar=true para processar, que
+    aí sim grava as leituras no ERP.
     """
     from ahreas_mcp.telas import executor
     from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
@@ -507,3 +544,36 @@ async def importar_arquivo_em_tela(
         corpo[nome] = valor
     html_final = await sessao.postar(caminho, corpo, acao_processar)
     return _resultado_tela(executor._resultado(html_final))
+
+
+@mcp.tool
+async def diagnostico_web() -> dict[str, Any]:
+    """Confere se o modo telas está de pé: login web, catálogo e telas-chave.
+
+    Por ser replay de tela, o modo telas depende da forma do painel. Esta
+    ferramenta faz login, conta as telas do menu e confirma que a tela de
+    importação de consumo ainda tem os campos esperados — um alarme caso a Ahreas
+    mude algo. Rode antes de uma operação importante para ter certeza.
+    """
+    from ahreas_mcp.telas import catalogo, formulario
+    from ahreas_mcp.telas.servico import SemLoginWeb
+    from ahreas_mcp.telas.sessao_web import LoginWebRecusado
+
+    resultado: dict[str, Any] = {}
+    try:
+        sessao = await _sessao_web()
+    except (SemLoginWeb, LoginWebRecusado) as erro:
+        return {"ok": False, "login_web": f"falhou: {erro}"}
+    resultado["login_web"] = "ok"
+    try:
+        telas = await catalogo.carregar(sessao)
+        resultado["telas_no_menu"] = len(telas)
+        html, _ = await sessao.abrir("/receber/rateio/Importa_LeituraConsumo.aspx")
+        campos = {c.nome for c in formulario.analisar(html).campos}
+        esperados = {"txtCodigo_Agua", "txtCodigo_Gas"}
+        resultado["tela_consumo_ok"] = esperados <= campos
+        resultado["ok"] = bool(telas) and esperados <= campos
+    except Exception as erro:  # noqa: BLE001 - diagnóstico nunca derruba
+        resultado["ok"] = False
+        resultado["erro"] = f"{type(erro).__name__}: {erro}"
+    return resultado
