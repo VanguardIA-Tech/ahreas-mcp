@@ -102,6 +102,39 @@ def test_extrai_acoes_por_linha_da_grid():
     assert link["argumento"] == "X" and link["linha"] == "9797 2233 LIB"
 
 
+def test_paginacao_pagina_cheia_tem_proxima():
+    # Página cheia (linhas == tamanho): há próxima; a ação de avançar é exposta.
+    pager = (
+        '<input name="rg$ctl00$ctl02$ctl00$UcPagerTemplate1$tbPageNumber" value="1"/>'
+        '<input name="rg$ctl00$ctl02$ctl00$UcPagerTemplate1$tbPageSize" value="2"/>'
+    )
+    p = executor._paginacao(pager, linhas_na_pagina=2)
+    assert p is not None
+    assert p["pagina"] == 1
+    assert p["acao_proxima"] == "rg$ctl00$ctl02$ctl00$UcPagerTemplate1$LinkButton10"
+
+
+def test_paginacao_pagina_incompleta_sem_proxima():
+    # Página incompleta (linhas < tamanho) é a última: sem `acao_proxima`.
+    pager = (
+        '<input name="rg$ctl00$ctl02$ctl00$UcPagerTemplate1$tbPageNumber" value="2"/>'
+        '<input name="rg$ctl00$ctl02$ctl00$UcPagerTemplate1$tbPageSize" value="99"/>'
+    )
+    p = executor._paginacao(pager, linhas_na_pagina=42)
+    assert p is not None and p["pagina"] == 2
+    assert "acao_proxima" not in p
+
+
+def test_sem_pager_sem_paginacao():
+    assert executor._paginacao("<table><tr><td>x</td></tr></table>", 1) is None
+
+
+def test_alvo_de_pager_e_leitura():
+    # Paginar não pode exigir confirmação de escrita.
+    alvo = "rg$ctl00$ctl02$ctl00$UcPagerTemplate1$LinkButton10"
+    assert executor.efeito_da_acao(alvo) is executor.EfeitoAcao.LEITURA
+
+
 def test_mensagem_ignora_lixo_de_script():
     # O regex de mensagem não pode devolver JavaScript.
     html = '<span id="lblMensagem">function(x){return x}</span>'

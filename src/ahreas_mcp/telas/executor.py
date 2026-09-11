@@ -36,7 +36,7 @@ _ESCRITA = re.compile(
 )
 _LEITURA = re.compile(
     r"(consult|pesquis|busca|filtr|listar|lista|exib|visualiz|relat|download|"
-    r"selec|carreg|abrir|detalh|ver)",
+    r"selec|carreg|abrir|detalh|ver|UcPagerTemplate|tbPage|PageSize)",
     re.I,
 )
 
@@ -71,6 +71,8 @@ class Resultado:
     # Uma ação por linha da grade (Alterar/Excluir/Consultar, links de postback):
     # o `acao` a passar de volta para acionar aquela linha, o rótulo e a linha.
     acoes_linha: tuple[dict[str, str], ...] = field(default_factory=tuple)
+    # Paginação da grade, quando paginada: página atual e ação de próxima página.
+    paginacao: dict[str, str | int] | None = None
 
 
 def _extrair_mensagem(html: str) -> str | None:
@@ -192,36 +194,37 @@ def extrair_tabela(
 # expande a grid para trazer todas as linhas numa página só — sem isso, uma grid
 # de 99 unidades viria de 10 em 10, e preencher/ler em massa exigiria navegar
 # página a página.
-_RE_PAGESIZE = re.compile(r'name="([^"]+UcPagerTemplate\d*\$tbPageSize)"')
-_TODAS = "9999"
+# O pager UcPagerTemplate do Ahreas: `tbPageSize` (linhas por página, fixo), o
+# `tbPageNumber` (página atual) e os LinkButtons de navegação. A numeração é
+# uniforme em todo o sistema: 7=primeira, 8=anterior, 10=próxima, 11=última.
+# A grade fixa o tamanho de página (aumentar tbPageSize não tem efeito) e rebinda
+# ao paginar — então uma grade de edição em massa é preenchida e gravada PÁGINA A
+# PÁGINA; as edições não sobrevivem à troca de página.
+_RE_PAGER = re.compile(r'name="([^"]+UcPagerTemplate\d*)\$tbPageSize"')
+_RE_PAGENUM = re.compile(r'name="[^"]+UcPagerTemplate\d*\$tbPageNumber"[^>]*value="\s*(\d+)')
+_RE_PAGESIZE_VAL = re.compile(r'name="[^"]+UcPagerTemplate\d*\$tbPageSize"[^>]*value="\s*(\d+)')
 
 
-def _client_state_pagesize(valor: str) -> str:
-    return (
-        f'{{"enabled":true,"emptyMessage":"","validationText":"{valor}",'
-        f'"valueAsString":"{valor}","valueWithPromptAndLiterals":"{valor}",'
-        f'"lastSetTextBoxValue":"{valor}"}}'
-    )
+def _paginacao(html: str, linhas_na_pagina: int) -> dict[str, str | int] | None:
+    """Descreve a paginação de uma grade, se ela for paginada.
 
-
-async def trazer_todas_as_linhas(sessao: SessaoWeb, caminho: str, html: str) -> str:
-    """Expande a grid paginada para uma página só, trazendo todas as linhas.
-
-    Genérico para qualquer RadGrid do Ahreas: acha o tamanho de página, sobe para
-    um número alto e refaz o postback. Se a tela não tem grid paginada, devolve o
-    mesmo HTML — nada a expandir.
+    Devolve a página atual e as ações de navegar (próxima/anterior), no mesmo
+    formato de `acoes_linha`, para o modelo preencher e gravar página a página.
+    `acao_proxima` só vem quando a página parece cheia (nº de linhas == tamanho
+    da página) — numa página incompleta não há próxima. Como o botão "próxima"
+    não desabilita na última página, o modelo confirma o fim quando `pagina` não
+    aumenta depois de acioná-la.
     """
-    m = _RE_PAGESIZE.search(html)
-    if m is None:
-        return html
-    campo = m.group(1)
-    from ahreas_mcp.telas.sessao_web import campos_ocultos
-
-    corpo = dict(campos_ocultos(html))
-    corpo[campo] = _TODAS
-    corpo[f"{campo.replace('$', '_')}_ClientState"] = _client_state_pagesize(_TODAS)
-    # O RadInput do pager tem AutoPostBack: o alvo do postback é o próprio campo.
-    return await sessao.postar(caminho, corpo, campo)
+    pager = _RE_PAGER.search(html)
+    if pager is None:
+        return None
+    prefixo = pager.group(1)
+    pagina = int(m.group(1)) if (m := _RE_PAGENUM.search(html)) else 1
+    tamanho = int(m.group(1)) if (m := _RE_PAGESIZE_VAL.search(html)) else 0
+    info: dict[str, str | int] = {"pagina": pagina, "acao_anterior": f"{prefixo}$LinkButton8"}
+    if tamanho and linhas_na_pagina >= tamanho:
+        info["acao_proxima"] = f"{prefixo}$LinkButton10"
+    return info
 
 
 async def executar(
@@ -231,7 +234,6 @@ async def executar(
     alvo: str,
     argumento: str = "",
     continuar: bool = False,
-    trazer_tudo: bool = True,
 ) -> Resultado:
     """Aplica os valores nos campos e dispara o alvo do botão.
 
@@ -240,9 +242,9 @@ async def executar(
     gravar — sem reabrir a tela e perder o que o passo anterior carregou. Sem
     ele, abre a tela do zero.
 
-    Com `trazer_tudo` (padrão), se a ação abrir uma grid paginada, ela é expandida
-    para trazer todas as linhas de uma vez — para ler ou preencher em massa sem
-    navegar página a página.
+    Se a ação abre uma grade paginada, o resultado traz `paginacao` (página atual
+    e a ação de próxima página): grades assim são preenchidas e gravadas página a
+    página, porque a grade rebinda ao paginar e as edições não sobrevivem à troca.
     """
     guardado = sessao.estado_atual(caminho) if continuar else None
     html_atual, estado = guardado if guardado is not None else await sessao.abrir(caminho)
@@ -256,16 +258,16 @@ async def executar(
             # RadNumericTextBox guarda o valor num campo espelho `_ClientState`
             # (JSON) e o servidor lê de lá, não do texto. Quem usa o MCP não sabe
             # fabricar esse JSON — então, ao setar um campo que tem espelho, o
-            # espelho é reescrito aqui com o mesmo valor. Genérico: vale para
-            # qualquer RadNumericTextBox de qualquer tela.
-            espelho = f"{nome}_ClientState"
+            # espelho é reescrito aqui com o mesmo valor. O name do espelho é o do
+            # campo com `$`→`_` mais `_ClientState` (ASP.NET usa o id, não o name):
+            # ex. `a$b$txtX` -> `a_b_txtX_ClientState`. É assim tanto num filtro
+            # solto quanto numa célula de grade — genérico para qualquer tela.
+            espelho = f"{nome.replace('$', '_')}_ClientState"
             if espelho in corpo:
                 corpo[espelho] = _reescrever_clientstate(corpo[espelho], valor)
     html = await sessao.postar(
         caminho, corpo, alvo, argumento, imagem=_e_botao_imagem(html_atual, alvo)
     )
-    if trazer_tudo:
-        html = await trazer_todas_as_linhas(sessao, caminho, html)
     return analisar_resultado(html)
 
 
@@ -288,6 +290,7 @@ def analisar_resultado(html: str) -> Resultado:
         tamanho=len(html),
         campos_editaveis=tuple(campos),
         acoes_linha=tuple(acoes),
+        paginacao=_paginacao(html, len(linhas)),
         html=html,
         colunas=tuple(colunas),
         linhas=tuple(tuple(linha) for linha in linhas),

@@ -459,6 +459,10 @@ def _resultado_tela(r: Any) -> dict[str, Any]:
         # ou editar aquela linha — o botão fica DENTRO da linha, não entre os
         # botões nomeados da tela.
         saida["acoes_linha"] = [dict(a) for a in r.acoes_linha]
+    if r.paginacao:
+        # A grade é paginada: preencha e grave PÁGINA A PÁGINA. `acao_proxima`
+        # (quando presente) avança para a próxima página.
+        saida["paginacao"] = dict(r.paginacao)
     return saida
 
 
@@ -491,8 +495,26 @@ async def executar_acao_tela(
     `acao` = o `acao` de lá (e `argumento` se vier), `continuar=true`. É assim que
     se abre a grade de edição por unidade de uma leitura: filtrar → pegar o
     `acao` "Alterar" da linha em `acoes_linha` → acioná-lo → preencher
-    `campos_editaveis` → gravar. Consulta roda direto; ação que altera o ERP exige
-    confirmar=true e AHREAS_PERMITIR_ESCRITA.
+    `campos_editaveis` → gravar.
+
+    GRADE PAGINADA (vem `paginacao` no resultado) — grave UMA PÁGINA POR VEZ, e
+    NUNCA navegue de página com valores preenchidos e ainda não gravados: a grade
+    recarrega ao paginar e as edições não gravadas se perdem. Só navegue numa
+    página recém-aberta ou recém-gravada. Os nomes dos campos se REPETEM entre
+    páginas (a página 2 também começa em ctl04...), então use SEMPRE os
+    `campos_editaveis` da resposta atual, casando cada unidade pelo `linha`.
+
+    Fluxo para gravar N páginas, começando de já_gravadas = 0:
+      1. acione "Alterar" da linha (abre a grade na PÁGINA 1);
+      2. acione `paginacao.acao_proxima` (continuar=true) já_gravadas vezes, para
+         chegar na primeira página ainda não gravada — sem preencher nada antes;
+      3. preencha os `campos_editaveis` dessa página + `btnGravar` numa única
+         chamada (continuar=true, confirmar=true) — grava essa página;
+      4. se a página tinha `acao_proxima`, há mais: some 1 em já_gravadas e volte
+         ao passo 1 (reabra com "Alterar"). Se não tinha, terminou.
+
+    Consulta roda direto; ação que altera o ERP exige confirmar=true e
+    AHREAS_PERMITIR_ESCRITA.
     """
     from ahreas_mcp.telas import executor
     from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
