@@ -51,6 +51,9 @@ class Configuracao(BaseSettings):
     # e-mail aqui; a senha, se omitida, reaproveita AHREAS_SENHA.
     web_email: str | None = None
     web_senha: SecretStr | None = None
+    # O módulo web onde ficam as telas de operação. Na prática é o condomínios;
+    # fica configurável para não presumir a estrutura de uma instalação.
+    modulo_web: str = "condominioweb"
 
     # --- Servidor remoto e OAuth (modo multiusuário) -----------------------
     # A URL pública por onde os clientes MCP chegam. É a âncora do OAuth: entra

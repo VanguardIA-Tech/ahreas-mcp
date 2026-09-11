@@ -17,6 +17,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
+from ahreas_mcp.configuracao import configuracao
 from ahreas_mcp.telas.sessao_web import SessaoWeb
 
 # Item do RadMenu: o nome legível e o caminho da tela.
@@ -69,7 +70,7 @@ async def carregar(sessao: SessaoWeb, *, validade_segundos: int = 3600) -> list[
     if _cache is not None and agora - _cache.carregado_em < validade_segundos:
         return _cache.telas
     html, _ = await sessao.abrir("/default.aspx")
-    telas = _extrair(html, "condominioweb")
+    telas = _extrair(html, configuracao().modulo_web)
     _cache = _Cache(telas=telas, por_caminho={t.caminho: t for t in telas}, carregado_em=agora)
     return telas
 

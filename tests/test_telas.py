@@ -121,21 +121,23 @@ async def test_login_web_recusado():
 
 
 @respx.mock
-async def test_upload_monta_client_state():
+async def test_upload_monta_client_state_e_descobre_o_campo():
+    # O id do controle (aqui MeuUpload) sai do HTML; o campo é <id>_ClientState.
     html_tela = (
+        '<div id="MeuUpload" class="RadAsyncUpload RadUpload"></div>'
         '$create(Telerik.Web.UI.RadAsyncUpload, {"_serializedConfiguration":"CFG",'
-        '"_serializedConfigurationType":"TIPO"}, null, null, $get("RdUpArquivo"));'
+        '"_serializedConfigurationType":"TIPO"}, null, null, $get("MeuUpload"));'
     )
     respx.post(f"{_BASE}/Telerik.Web.UI.WebResource.axd").mock(
         return_value=httpx.Response(
             200,
-            json={
-                "fileInfo": {"FileName": "a.txt", "ContentLength": 3},
-                "metaData": "TOKEN123",
-            },
+            json={"fileInfo": {"FileName": "a.txt", "ContentLength": 3}, "metaData": "TOKEN123"},
         )
     )
     sessao = sw.SessaoWeb(base_web=_BASE, cookies={})
-    estado = await sessao.enviar_arquivo(html_tela, "/tela.aspx", "a.txt", b"abc", "text/plain")
-    assert "TOKEN123" in estado
-    assert "uploadedFiles" in estado
+    estado, campo = await sessao.enviar_arquivo(
+        html_tela, "/tela.aspx", "a.txt", b"abc", "text/plain"
+    )
+    assert "TOKEN123" in estado and "uploadedFiles" in estado
+    # O campo foi descoberto do HTML, não presumido.
+    assert campo == "MeuUpload_ClientState"

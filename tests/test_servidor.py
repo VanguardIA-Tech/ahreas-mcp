@@ -71,7 +71,7 @@ async def test_lista_as_ferramentas():
         nomes = {t.name for t in await c.list_tools()}
     # As quatro do web service (SOAP)...
     assert {
-        "listar_funcionalidades",
+        "listar_metodos",
         "descrever_metodo",
         "executar_metodo",
         "diagnostico",

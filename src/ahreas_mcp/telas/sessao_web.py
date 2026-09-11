@@ -30,6 +30,9 @@ _HANDLER_UPLOAD = "/Telerik.Web.UI.WebResource.axd?type=rau"
 # O rauPostData é a junção destes dois campos do $create do controle, na ordem.
 _RE_CONFIG = re.compile(r'"_serializedConfiguration":"([^"]+)"')
 _RE_CONFIG_TIPO = re.compile(r'"_serializedConfigurationType":"([^"]+)"')
+# O id do controle de upload, para descobrir o campo `<id>_ClientState` de cada
+# tela — não presumir um nome fixo, que só valeria para uma tela.
+_RE_CONTROLE_UPLOAD = re.compile(r'<div[^>]*id="([^"]+)"[^>]*class="[^"]*RadAsyncUpload', re.I)
 
 # Campos de estado do WebForms que todo postback precisa devolver intactos.
 _ESTADO = ("__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION", "__VIEWSTATEENCRYPTED")
@@ -114,19 +117,25 @@ class SessaoWeb:
 
     async def enviar_arquivo(
         self, html_tela: str, caminho: str, nome: str, conteudo: bytes, content_type: str
-    ) -> str:
-        """Sobe um arquivo pelo RadAsyncUpload e devolve o ClientState pronto.
+    ) -> tuple[str, str]:
+        """Sobe um arquivo pelo RadAsyncUpload e devolve o ClientState e o campo.
 
         O upload é assíncrono e independente do postback: manda o arquivo para o
         handler, recebe o token que o representa no servidor, e devolve o
         `ClientState` que o postback seguinte precisa carregar para que a tela
         reconheça o arquivo — é o que o navegador põe no campo escondido do
         controle antes de acionar o botão.
+
+        Devolve também o NOME desse campo (`<id do controle>_ClientState`), lido
+        do HTML da tela — cada tela nomeia o seu, e presumir um nome fixo só
+        funcionaria numa.
         """
         config = _RE_CONFIG.search(html_tela)
         config_tipo = _RE_CONFIG_TIPO.search(html_tela)
-        if config is None or config_tipo is None:
+        controle = _RE_CONTROLE_UPLOAD.search(html_tela)
+        if config is None or config_tipo is None or controle is None:
             raise TelaIndisponivel("Esta tela não tem um upload RadAsyncUpload reconhecível.")
+        campo_client_state = f"{controle.group(1)}_ClientState"
         rau = f"{config.group(1)}&{config_tipo.group(1)}"
         metadata = {
             "TotalChunks": 1,
@@ -157,12 +166,13 @@ class SessaoWeb:
             "isEnabled": "true",
             "uploadedFiles": [{"fileInfo": resposta["fileInfo"], "metaData": resposta["metaData"]}],
         }
-        return json.dumps(estado)
+        return json.dumps(estado), campo_client_state
 
 
 def _base_web() -> str:
-    """O módulo web é o `condominioweb` sob a mesma base do web service."""
-    return f"{configuracao().base_url}/condominioweb"
+    """O módulo web de operação, sob a mesma base do web service."""
+    conf = configuracao()
+    return f"{conf.base_url}/{conf.modulo_web}"
 
 
 async def entrar(email: str, senha: str) -> SessaoWeb:

@@ -1,7 +1,7 @@
 """As ferramentas que um cliente MCP enxerga.
 
 Quatro, no modelo buscar → descrever → executar: com centenas de métodos, não
-faz sentido uma tool por método. `listar_funcionalidades` acha o método pela
+faz sentido uma tool por método. `listar_metodos` acha o método pela
 intenção, `descrever_metodo` mostra o contrato, `executar_metodo` chama. Nenhuma
 recebe credencial — usuário, senha e chave vivem no processo, vindos do ambiente.
 
@@ -56,7 +56,7 @@ mcp: FastMCP[Any] = FastMCP(
         "HÁ DUAS SUPERFÍCIES, escolha pela tarefa:\n"
         "1) MÉTODOS (web service, dados prontos e rápidos): relatórios e consultas "
         "financeiras — inadimplência, contas a pagar, fluxo de caixa, boletos, "
-        "vencimentos. Fluxo: listar_funcionalidades(busca) → descrever_metodo(nome) "
+        "vencimentos. Fluxo: listar_metodos(busca) → descrever_metodo(nome) "
         "→ executar_metodo(nome, parametros).\n"
         "2) TELAS (o painel web, faz tudo que o operador faz): quando não há método, "
         "ou quando a pessoa quer OPERAR (importar, emitir, cadastrar, processar). "
@@ -126,7 +126,7 @@ def _descrever_parametros(metodo: wsdl.Metodo) -> list[dict[str, Any]]:
 
 
 @mcp.tool
-async def listar_funcionalidades(
+async def listar_metodos(
     busca: Annotated[
         str | None, "Texto no nome do método (ex.: 'boleto', 'inadimplencia')."
     ] = None,
@@ -155,7 +155,7 @@ async def listar_funcionalidades(
 
 @mcp.tool
 async def descrever_metodo(
-    nome: Annotated[str, "Nome do método, como aparece em listar_funcionalidades."],
+    nome: Annotated[str, "Nome do método, como aparece em listar_metodos."],
 ) -> dict[str, Any]:
     """Detalha um método: serviço, parâmetros, formato e se lê ou grava."""
     metodo = await wsdl.metodo(nome)
@@ -166,7 +166,7 @@ async def descrever_metodo(
                 "codigo": "ahreas.metodo.inexistente",
                 "mensagem": (
                     f"Não há método {nome!r} no catálogo deste Ahreas. Use "
-                    "listar_funcionalidades para ver os nomes desta instalação."
+                    "listar_metodos para ver os nomes desta instalação."
                 ),
             },
         }
@@ -226,7 +226,7 @@ async def executar_metodo(
                 "codigo": "ahreas.metodo.inexistente",
                 "mensagem": (
                     f"Não há método {nome!r} no catálogo deste Ahreas. Use "
-                    "listar_funcionalidades para ver os nomes desta instalação."
+                    "listar_metodos para ver os nomes desta instalação."
                 ),
             },
         }
@@ -379,7 +379,7 @@ async def listar_telas(
 
     Use quando a pessoa quer FAZER algo que se faz na tela: importar leitura de
     consumo (gás/água), emitir boleto, lançar, cadastrar, processar emissão,
-    gerar remessa — ou quando listar_funcionalidades não achou um método para a
+    gerar remessa — ou quando listar_metodos não achou um método para a
     consulta. Busque pela intenção (ex.: 'consumo', 'boleto', 'emissão') e chame
     descrever_tela no caminho que achar para ver os campos e as ações.
     """
@@ -480,52 +480,60 @@ async def executar_acao_tela(
 
 @mcp.tool
 async def importar_arquivo_em_tela(
-    caminho: Annotated[str, "Caminho da tela de importação (ex.: a de consumo de gás/água)."],
+    caminho: Annotated[str, "Caminho de qualquer tela de importação (ver descrever_tela)."],
     nome_arquivo: Annotated[str, "Nome do arquivo, ex. 'leituras.txt'."],
     conteudo: Annotated[str, "Conteúdo do arquivo em texto."],
-    acao_processar: Annotated[str, "Botão que processa a importação."] = "btnProcessar",
-    campos: Annotated[dict[str, str] | None, "Campos extras (ex.: separar por bloco)."] = None,
+    acao_processar: Annotated[str, "Botão que processa/grava (ver ações em descrever_tela)."],
+    acao_reconhecer: Annotated[
+        str | None, "Botão que a tela dispara ao aceitar o arquivo, se houver (ver descrever_tela)."
+    ] = None,
+    campos: Annotated[dict[str, str] | None, "Campos extras da tela a preencher."] = None,
     confirmar: Annotated[bool, "Obrigatório: a importação grava no ERP."] = False,
 ) -> dict[str, Any]:
-    """Sobe um arquivo numa tela de importação e, com confirmação, processa.
+    """Sobe um arquivo em QUALQUER tela de importação e, com confirmação, processa.
 
-    É a ferramenta do fluxo de gás/água: na tela 'Importação de Controle de
-    Consumo', envia o arquivo de leituras. Primeiro chame SEM confirmar — o
-    arquivo é enviado e a tela o reconhece (o próprio Ahreas preenche os códigos
-    de tarifa de água/gás do condomínio), sem gravar nada; mostre isso à pessoa.
-    Só depois do sim dela, chame de novo com confirmar=true para processar, que
-    aí sim grava as leituras no ERP.
+    Serve para toda tela que recebe arquivo (leitura de consumo, retorno bancário,
+    lote de lançamentos, etc.) — nada é específico de um fluxo. Descubra a tela em
+    listar_telas e os botões em descrever_tela (`acao_processar` é o que grava;
+    `acao_reconhecer`, se existir, é o que a tela dispara ao aceitar o arquivo).
+
+    Primeiro chame SEM confirmar: o arquivo é enviado e a tela o reconhece — o
+    próprio Ahreas pode preencher campos a partir dele — sem gravar; mostre o
+    resultado à pessoa. Só depois do sim dela, chame de novo com confirmar=true.
     """
-    from ahreas_mcp.telas import executor
-    from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
+    from ahreas_mcp.telas import executor, formulario
+    from ahreas_mcp.telas.sessao_web import (
+        LoginWebRecusado,
+        TelaIndisponivel,
+        campos_ocultos,
+    )
 
     try:
         sessao = await _sessao_web()
         html, estado = await sessao.abrir(caminho)
-        client_state = await sessao.enviar_arquivo(
+        client_state, campo_cs = await sessao.enviar_arquivo(
             html, caminho, nome_arquivo, conteudo.encode("utf-8"), "text/plain"
         )
-        # Postback que faz a tela reconhecer o arquivo (não grava).
         corpo = dict(estado)
-        corpo["RdUpArquivo_ClientState"] = client_state
-        html_reconhecido = await sessao.postar(caminho, corpo, "btnSelecionar")
+        corpo[campo_cs] = client_state
+        # Se a tela reconhece o arquivo por um postback próprio, aciona-o (não grava).
+        html_reconhecido = (
+            await sessao.postar(caminho, corpo, acao_reconhecer) if acao_reconhecer else html
+        )
     except (LoginWebRecusado, TelaIndisponivel) as erro:
         return {"ok": False, "erro": {"codigo": "ahreas.tela.indisponivel", "mensagem": str(erro)}}
 
     if not confirmar:
-        # Mostra o que a tela reconheceu, sem processar.
-        form = executor.fo.analisar(html_reconhecido)
-        preenchidos = {c.nome: "" for c in form.campos}
+        form = formulario.analisar(html_reconhecido)
         return {
             "ok": True,
             "status": "arquivo_enviado_sem_processar",
             "arquivo_reconhecido": nome_arquivo in html_reconhecido,
             "resumo": (
-                f"Arquivo {nome_arquivo} enviado e reconhecido pela tela {caminho}. "
-                "Processar vai gravar as leituras no ERP — chame de novo com "
-                "confirmar=true depois de a pessoa revisar."
+                f"Arquivo {nome_arquivo} enviado à tela {caminho}. Processar ({acao_processar}) "
+                "vai gravar no ERP — chame de novo com confirmar=true depois de a pessoa revisar."
             ),
-            "campos_da_tela": list(preenchidos),
+            "campos_da_tela": [c.nome for c in form.campos],
         }
     if not configuracao().permitir_escrita:
         return {
@@ -536,24 +544,25 @@ async def importar_arquivo_em_tela(
             },
         }
     # Reenvia com o arquivo já reconhecido e aciona o processamento.
-    from ahreas_mcp.telas.sessao_web import campos_ocultos
-
     corpo = dict(campos_ocultos(html_reconhecido))
-    corpo["RdUpArquivo_ClientState"] = client_state
+    corpo[campo_cs] = client_state
     for nome, valor in (campos or {}).items():
         corpo[nome] = valor
     html_final = await sessao.postar(caminho, corpo, acao_processar)
-    return _resultado_tela(executor._resultado(html_final))
+    return _resultado_tela(executor.analisar_resultado(html_final))
 
 
 @mcp.tool
-async def diagnostico_web() -> dict[str, Any]:
-    """Confere se o modo telas está de pé: login web, catálogo e telas-chave.
+async def diagnostico_web(
+    caminho: Annotated[str | None, "Tela específica a conferir; senão, uma amostra."] = None,
+) -> dict[str, Any]:
+    """Confere se o modo telas está de pé: login web, catálogo e forma das telas.
 
     Por ser replay de tela, o modo telas depende da forma do painel. Esta
-    ferramenta faz login, conta as telas do menu e confirma que a tela de
-    importação de consumo ainda tem os campos esperados — um alarme caso a Ahreas
-    mude algo. Rode antes de uma operação importante para ter certeza.
+    ferramenta faz login, conta as telas do menu e abre uma amostra delas para
+    confirmar que ainda têm forma reconhecível (campos e ações) — um alarme caso
+    a Ahreas mude o painel. Passe `caminho` para checar uma tela específica antes
+    de uma operação importante nela.
     """
     from ahreas_mcp.telas import catalogo, formulario
     from ahreas_mcp.telas.servico import SemLoginWeb
@@ -568,11 +577,17 @@ async def diagnostico_web() -> dict[str, Any]:
     try:
         telas = await catalogo.carregar(sessao)
         resultado["telas_no_menu"] = len(telas)
-        html, _ = await sessao.abrir("/receber/rateio/Importa_LeituraConsumo.aspx")
-        campos = {c.nome for c in formulario.analisar(html).campos}
-        esperados = {"txtCodigo_Agua", "txtCodigo_Gas"}
-        resultado["tela_consumo_ok"] = esperados <= campos
-        resultado["ok"] = bool(telas) and esperados <= campos
+        # Amostra: as telas pedidas, ou as três primeiras do catálogo.
+        alvos = [caminho] if caminho else [t.caminho for t in telas[:3]]
+        conferidas = []
+        for alvo in alvos:
+            html, _ = await sessao.abrir(alvo)
+            form = formulario.analisar(html)
+            conferidas.append(
+                {"caminho": alvo, "campos": len(form.campos), "acoes": len(form.acoes)}
+            )
+        resultado["telas_conferidas"] = conferidas
+        resultado["ok"] = bool(telas) and all(c["campos"] or c["acoes"] for c in conferidas)
     except Exception as erro:  # noqa: BLE001 - diagnóstico nunca derruba
         resultado["ok"] = False
         resultado["erro"] = f"{type(erro).__name__}: {erro}"

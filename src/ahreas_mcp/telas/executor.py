@@ -142,10 +142,11 @@ async def executar(
         else:
             corpo[nome] = valor
     html = await sessao.postar(caminho, corpo, alvo, argumento)
-    return _resultado(html)
+    return analisar_resultado(html)
 
 
-def _resultado(html: str) -> Resultado:
+def analisar_resultado(html: str) -> Resultado:
+    """Lê a resposta de um postback: sucesso/erro, título, mensagem e tabela."""
     titulo = _TITULO.search(html)
     mensagem = _extrair_mensagem(html)
     colunas, linhas = extrair_tabela(html)
