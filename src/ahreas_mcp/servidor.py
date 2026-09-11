@@ -18,6 +18,7 @@ from fastmcp import FastMCP
 from ahreas_mcp.catalogo import wsdl
 from ahreas_mcp.configuracao import configuracao
 from ahreas_mcp.semantica.efeitos import Efeito, efeito, grava
+from ahreas_mcp.sessao import usuario as sessao
 from ahreas_mcp.soap import cliente
 
 # Acima disto, uma resposta é grande demais para uma conversa e quase sempre é
@@ -25,8 +26,23 @@ from ahreas_mcp.soap import cliente
 # de despejar 1 MB no contexto.
 _LIMITE_CONTEUDO = 60_000
 
+
+def _auth() -> Any:
+    """O servidor de autorização OAuth, só quando o modo remoto está ligado.
+
+    Montado tardiamente: instanciar o provider exige AHREAS_PUBLIC_URL, que no
+    uso local (stdio) nem existe.
+    """
+    if not configuracao().modo_remoto:
+        return None
+    from ahreas_mcp.auth.provedor import AhreasAuthProvider
+
+    return AhreasAuthProvider()
+
+
 mcp: FastMCP[Any] = FastMCP(
     name="Ahreas",
+    auth=_auth(),
     instructions=(
         "ERP Ahreas (condomínios). O catálogo de métodos vem do WSDL da própria "
         "instalação, então os nomes são os que este Ahreas publica. Comece por "
@@ -40,6 +56,31 @@ mcp: FastMCP[Any] = FastMCP(
         "exige confirmar=true, e antes disso mostre à pessoa o que vai rodar."
     ),
 )
+
+
+class SessaoExpirada(Exception):
+    """O token chegou, mas a sessão dele não existe mais — refazer login."""
+
+
+def _credencial() -> cliente.Credencial | None:
+    """A credencial de quem está chamando.
+
+    No remoto, sai da sessão que o token de acesso OAuth abriu — cada pessoa
+    fala pelo próprio usuário do Ahreas. No local (stdio) não há request, então
+    devolve None e a chamada usa a identidade do ambiente.
+    """
+    from fastmcp.server.dependencies import get_access_token
+
+    try:
+        token = get_access_token()
+    except Exception:
+        return None
+    if token is None:
+        return None
+    atual = sessao.obter(token.token)
+    if atual is None:
+        raise SessaoExpirada("Sua sessão do Ahreas expirou. Faça login novamente.")
+    return atual.credencial
 
 
 def _dica_formato(tipo: str) -> str | None:
@@ -169,6 +210,14 @@ async def executar_metodo(
             },
         }
 
+    try:
+        credencial = _credencial()
+    except SessaoExpirada as erro:
+        return {
+            "ok": False,
+            "erro": {"codigo": "ahreas.sessao_expirada", "mensagem": str(erro)},
+        }
+
     ef = efeito(nome)
     if grava(nome):
         if not confirmar:
@@ -196,7 +245,22 @@ async def executar_metodo(
             }
 
     try:
-        resposta = await cliente.chamar(metodo.servico, nome, parametros or {})
+        resposta = await cliente.chamar(
+            metodo.servico, nome, parametros or {}, credencial=credencial
+        )
+    except cliente.SemIdentidade as erro:
+        return {
+            "ok": False,
+            "erro": {"codigo": "ahreas.sem_identidade", "mensagem": str(erro)},
+        }
+    except cliente.CredencialRecusada as erro:
+        return {
+            "ok": False,
+            "erro": {
+                "codigo": "ahreas.credencial_recusada",
+                "mensagem": f"O Ahreas recusou a credencial ({erro}). Faça login novamente.",
+            },
+        }
     except cliente.SemLicenca as erro:
         return {
             "ok": False,
@@ -233,6 +297,7 @@ async def diagnostico() -> dict[str, Any]:
     conf = configuracao()
     resultado: dict[str, Any] = {
         "base_url": conf.base_url,
+        "modo": "remoto (OAuth)" if conf.modo_remoto else "local (stdio)",
         "escrita_liberada": conf.permitir_escrita,
     }
     try:
@@ -250,9 +315,20 @@ async def diagnostico() -> dict[str, Any]:
         return resultado
 
     try:
-        resposta = await cliente.chamar("administracaoweb", "ValidaCredencial", {})
+        credencial = _credencial()
+    except SessaoExpirada:
+        resultado["credencial"] = "sessão expirada — faça login novamente"
+        return resultado
+    try:
+        resposta = await cliente.chamar(
+            "administracaoweb", "ValidaCredencial", {}, credencial=credencial
+        )
         resultado["credencial"] = (
             "ok" if "sucesso" in resposta.conteudo.lower() else resposta.conteudo[:120]
+        )
+    except cliente.SemIdentidade:
+        resultado["credencial"] = (
+            "sem identidade nesta chamada (no stdio, configure AHREAS_USUARIO/AHREAS_SENHA)"
         )
     except cliente.AhreasIndisponivel as erro:
         resultado["credencial"] = f"falhou: {erro}"

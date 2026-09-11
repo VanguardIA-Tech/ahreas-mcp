@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 
+from ahreas_mcp.configuracao import configuracao
 from ahreas_mcp.servidor import mcp
 
 
@@ -29,6 +30,11 @@ def main() -> None:
     if lidos.transporte == "stdio":
         mcp.run()
         return
+    if not configuracao().modo_remoto:
+        raise SystemExit(
+            "O modo http precisa de AHREAS_PUBLIC_URL — a URL pública por onde os "
+            "clientes MCP chegam, usada como âncora do OAuth."
+        )
     mcp.run(transport="http", host=lidos.host, port=lidos.porta)
 
 

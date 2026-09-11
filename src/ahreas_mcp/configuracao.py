@@ -31,12 +31,27 @@ class Configuracao(BaseSettings):
     # web services penduram embaixo dela.
     base_url: str
 
-    # --- Credencial de web service (a mesma para todo método) ---------------
-    usuario: str
-    senha: SecretStr
-    # A chave de acesso do web service. Longa, cheia de símbolos: é ela que
-    # libera a integração, separada da senha do usuário.
+    # A chave de acesso do web service. Longa, cheia de símbolos: é o passe da
+    # administradora para usar a integração, separada do login de cada pessoa.
+    # Fica no servidor e vale para todas as sessões — o Ahreas recusa a chamada
+    # inteira se ela estiver errada.
     chave: SecretStr
+
+    # --- Identidade do modo local (stdio) ----------------------------------
+    # Usuário e senha do Ahreas de quem instalou, para uso pessoal por stdio. No
+    # modo remoto (HTTP + OAuth) cada pessoa entra com a sua na tela de login, e
+    # estes ficam vazios. O Ahreas valida usuário e senha individualmente, então
+    # é daqui (ou da sessão) que saem as permissões aplicadas.
+    usuario: str | None = None
+    senha: SecretStr | None = None
+
+    # --- Servidor remoto e OAuth (modo multiusuário) -----------------------
+    # A URL pública por onde os clientes MCP chegam. É a âncora do OAuth: entra
+    # no issuer, no audience dos tokens e nos metadados de descoberta. Sem ela,
+    # o servidor só serve stdio local.
+    public_url: str | None = None
+    # Quanto tempo a sessão do navegador vale antes de exigir novo login.
+    sessao_horas: int = 12
 
     # --- Comportamento da chamada ------------------------------------------
     # O Ahreas é lento e sua disponibilidade oscila; um relatório grande passa
@@ -55,12 +70,27 @@ class Configuracao(BaseSettings):
 
     @field_validator("base_url")
     @classmethod
-    def _sem_barra_final(cls, valor: str) -> str:
+    def _base_sem_barra(cls, valor: str) -> str:
         return valor.rstrip("/")
+
+    @field_validator("public_url")
+    @classmethod
+    def _public_sem_barra(cls, valor: str | None) -> str | None:
+        return valor.rstrip("/") if valor else None
 
     def url_servico(self, servico: str) -> str:
         """O endpoint .asmx de um dos dois web services."""
         return f"{self.base_url}/{servico}/wsdocumentos.asmx"
+
+    @property
+    def tem_identidade(self) -> bool:
+        """Se há usuário e senha do Ahreas configurados para o modo stdio."""
+        return bool(self.usuario and self.senha)
+
+    @property
+    def modo_remoto(self) -> bool:
+        """Servir por HTTP com OAuth exige saber a própria URL pública."""
+        return self.public_url is not None
 
 
 @lru_cache

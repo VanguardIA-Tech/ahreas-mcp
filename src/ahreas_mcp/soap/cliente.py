@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 from xml.sax.saxutils import escape
@@ -53,6 +53,18 @@ SEM_LICENCA: Final = (
     "não tem acesso a esta função",
 )
 
+# Frases de credencial recusada: usuário/senha da pessoa errados, ou a chave da
+# administradora inválida. Distinto de licença — aqui a resposta é "faça login
+# de novo", não "módulo não contratado". Checado ANTES da validação de
+# parâmetro, senão "usuário ou senha inválido" cairia em FaltaParametro pelo
+# "inválid".
+CREDENCIAL_RECUSADA: Final = (
+    "usuário ou senha inválido",
+    "usuario ou senha invalido",
+    "não possui acesso para utilizar o webservice",
+    "nao possui acesso para utilizar o webservice",
+)
+
 
 class Efeito(StrEnum):
     LEITURA = "leitura"
@@ -65,6 +77,11 @@ class RespostaVazia(Exception):
 
 class SemLicenca(Exception):
     """O método existe, mas a credencial não tem acesso a ele."""
+
+
+class CredencialRecusada(Exception):
+    """O Ahreas recusou a identidade: usuário/senha da pessoa ou a chave da
+    administradora. Pede novo login, não conserto de parâmetro."""
 
 
 class FaltaParametro(Exception):
@@ -166,6 +183,10 @@ _VALIDACAO: Final = (
 
 def _classificar_fault(texto: str, metodo: str) -> Exception:
     msg = mensagem_de_negocio(texto)
+    # Credencial recusada primeiro: "usuário ou senha inválido" casaria com o
+    # "inválid" da validação de parâmetro, e a orientação seria a errada.
+    if _contem(texto, CREDENCIAL_RECUSADA):
+        return CredencialRecusada(msg)
     if _contem(texto, SEM_LICENCA):
         return SemLicenca(msg)
     if _contem(texto, FALTA_DE_DADOS):
@@ -220,13 +241,40 @@ def _extrair_resultado(envelope_xml: str, metodo: str) -> str:
     return interno
 
 
-def _credenciais() -> dict[str, object]:
+@dataclass(frozen=True, slots=True)
+class Credencial:
+    """O login de uma pessoa no Ahreas: usuário e senha.
+
+    Só isto identifica quem está agindo. A chave da administradora vem sempre do
+    servidor e é somada na hora da chamada. A senha fica fora do repr para não
+    vazar em log ou stack trace.
+    """
+
+    usuario: str
+    senha: str = field(repr=False)
+
+
+class SemIdentidade(Exception):
+    """Não há usuário/senha do Ahreas: nem na sessão, nem no ambiente."""
+
+
+def _credenciais(credencial: Credencial | None) -> dict[str, object]:
+    """Usuário/senha (da sessão ou do ambiente) mais a chave da administradora.
+
+    A chave é sempre do servidor. O usuário e a senha vêm da sessão de quem
+    chamou; no modo stdio local, do ambiente. Sem nenhum dos dois, `SemIdentidade`.
+    """
     conf = configuracao()
-    return {
-        "usuario": conf.usuario,
-        "senha": conf.senha.get_secret_value(),
-        "chave": conf.chave.get_secret_value(),
-    }
+    if credencial is not None:
+        usuario, senha = credencial.usuario, credencial.senha
+    elif conf.usuario and conf.senha:
+        usuario, senha = conf.usuario, conf.senha.get_secret_value()
+    else:
+        raise SemIdentidade(
+            "Sem usuário e senha do Ahreas. No modo local, configure AHREAS_USUARIO "
+            "e AHREAS_SENHA; no modo remoto, faça login."
+        )
+    return {"usuario": usuario, "senha": senha, "chave": conf.chave.get_secret_value()}
 
 
 async def chamar(
@@ -234,12 +282,17 @@ async def chamar(
     metodo: str,
     parametros: dict[str, object] | None = None,
     *,
+    credencial: Credencial | None = None,
     timeout: float | None = None,
 ) -> Resposta:
     """Chama um método SOAP e devolve o conteúdo interno.
 
-    `parametros` são os do método, sem as credenciais — elas são anexadas aqui,
-    então nunca precisam ser passadas de fora nem aparecem no histórico.
+    `parametros` são os do método, sem as credenciais. A identidade vem de
+    `credencial` (a sessão de quem pediu) ou, se ausente, do ambiente (stdio).
+    As credenciais são anexadas aqui e nunca aparecem no histórico da conversa.
+
+    Atenção: o envelope montado abaixo contém a senha em claro (o Ahreas
+    autentica por chamada). Nunca registre o envelope em log.
     """
     conf = configuracao()
     segundos = timeout if timeout is not None else conf.timeout_segundos
@@ -247,7 +300,7 @@ async def chamar(
     # Ordem: parâmetros do método primeiro, credenciais depois — é a ordem que o
     # Ahreas espera na maioria dos métodos.
     p: dict[str, object] = dict(parametros or {})
-    p.update(_credenciais())
+    p.update(_credenciais(credencial))
     envelope = _envelope(metodo, p)
     cabecalhos = {
         "Content-Type": "text/xml; charset=utf-8",
@@ -282,3 +335,19 @@ async def chamar(
     # legítimo (um condomínio "A & B") num "&" solto dentro da marcação.
     conteudo = _extrair_resultado(texto, metodo)
     return Resposta(metodo=metodo, servico=servico, conteudo=conteudo, tamanho=len(conteudo))
+
+
+async def validar_credencial(credencial: Credencial) -> bool:
+    """Se o Ahreas aceita este usuário e senha, agora.
+
+    Usado no login do modo remoto. `ValidaCredencial` responde HTTP 200 tanto no
+    sucesso quanto na recusa — "Usuário ou senha inválido." vem no corpo, não
+    como fault. Por isso a decisão é pelo texto: só "sucesso" é aceite.
+    """
+    try:
+        resposta = await chamar("administracaoweb", "ValidaCredencial", {}, credencial=credencial)
+    except (CredencialRecusada, SemLicenca):
+        return False
+    except AhreasIndisponivel:
+        raise
+    return "sucesso" in resposta.conteudo.lower()

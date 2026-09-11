@@ -24,19 +24,39 @@ services, e os módulos que a sua administradora não contratou aparecem como
 
 ## O que ele não consegue
 
-- **Login de operador (painel web) não é usado.** A integração é toda por web
-  service; o servidor autentica por `usuario` + `senha` + `chave` em cada
-  chamada, não por sessão de navegador.
 - **Módulo não contratado não executa.** Se a licença não cobre um método, o
   Ahreas recusa com "não possui acesso" e o servidor repassa isso como resposta.
 - **Ele não emula regra de negócio.** Nunca reproduz um método por conta própria;
   se o Ahreas não expõe, o servidor diz que não expõe.
 
+## Como cada pessoa se conecta
+
+Há dois modos, e a autenticação do Ahreas é a mesma dos dois: cada chamada leva
+`usuario` + `senha` da pessoa e a `chave` da administradora. O Ahreas valida o
+usuário e a senha individualmente, então as permissões aplicadas são as daquela
+pessoa.
+
+- **Remoto (HTTP + OAuth), multiusuário.** É o modo do produto. A pessoa conecta
+  o MCP no cliente dela (Claude, GPT, Cursor) pela URL pública; ao autorizar,
+  abre uma tela pedindo o usuário e a senha do Ahreas dela. A `chave` fica no
+  servidor. Cada sessão executa com a credencial de quem logou.
+- **Local (stdio), pessoal.** Uma pessoa só, com `AHREAS_USUARIO`/`AHREAS_SENHA`
+  no ambiente.
+
+> As sessões vivem na memória do processo. O deploy do modo remoto tem de rodar
+> **um processo só** — não subir réplicas sem um armazenamento de sessão
+> compartilhado.
+
 ## Segurança
 
-- **A credencial nunca é parâmetro de ferramenta.** Usuário, senha e chave entram
-  por variável de ambiente ou `.env` e ficam no processo; nenhuma tool as recebe,
-  então o modelo não as vê e elas não aparecem no histórico da conversa.
+- **A credencial nunca é parâmetro de ferramenta.** A `chave` entra por variável
+  de ambiente; o usuário e a senha vêm do login (remoto) ou do ambiente (stdio).
+  Nenhuma tool as recebe, então o modelo não as vê e elas não aparecem no
+  histórico da conversa.
+- **A senha da sessão fica só na memória.** O Ahreas autentica por chamada, sem
+  token de sessão do lado dele; então a senha de quem logou fica na memória do
+  processo enquanto a sessão vive, some no logout e na expiração, e nunca é
+  registrada em log.
 - **Escrita vem desligada.** `AHREAS_PERMITIR_ESCRITA` é `false` por padrão. Toda
   operação com efeito exige, além disso, uma confirmação explícita.
 - **Não versione o `.env`.** Ele já está no `.gitignore`.
@@ -49,9 +69,11 @@ partida.
 | Variável | Obrigatória | Padrão | Para que serve |
 | --- | --- | --- | --- |
 | `AHREAS_BASE_URL` | sim | — | Endereço do Ahreas, ex. `https://sistema.suaadm.com.br`. |
-| `AHREAS_USUARIO` | sim | — | Usuário do web service. |
-| `AHREAS_SENHA` | sim | — | Senha desse usuário. |
-| `AHREAS_CHAVE` | sim | — | Chave de acesso da integração. |
+| `AHREAS_CHAVE` | sim | — | Chave de acesso da integração (da administradora). |
+| `AHREAS_USUARIO` | só no stdio | — | Usuário do Ahreas, no modo local. |
+| `AHREAS_SENHA` | só no stdio | — | Senha desse usuário, no modo local. |
+| `AHREAS_PUBLIC_URL` | só no remoto | — | URL pública do servidor; âncora do OAuth. |
+| `AHREAS_SESSAO_HORAS` | não | `12` | Validade da sessão antes de novo login. |
 | `AHREAS_TIMEOUT_SEGUNDOS` | não | `30` | Tempo máximo por chamada SOAP. |
 | `AHREAS_TENTATIVAS` | não | `2` | Tentativas num soluço de rede. |
 | `AHREAS_CACHE_WSDL_SEGUNDOS` | não | `3600` | Validade do catálogo lido do WSDL. |
