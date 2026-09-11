@@ -66,8 +66,20 @@ def test_extrai_tabela_de_radgrid():
       <tr class="rgAltRow"><td>Apto 102</td><td>R$ 220,00</td></tr>
     </table>
     """
-    _, linhas = executor.extrair_tabela(html)
+    _, linhas, _ = executor.extrair_tabela(html)
     assert linhas == [["Apto 101", "R$ 150,00"], ["Apto 102", "R$ 220,00"]]
+
+
+def test_extrai_campos_editaveis_de_grid():
+    # Grade de edição: cada linha tem inputs preenchíveis com o nome e o valor.
+    html = """
+    <table>
+      <tr class="rgRow"><td>AG-A</td><td>000101</td>
+        <td><input type="text" name="ctl04$txtLeitura" value="85,16"/></td></tr>
+    </table>
+    """
+    _, _, campos = executor.extrair_tabela(html)
+    assert campos == [{"campo": "ctl04$txtLeitura", "valor": "85,16", "linha": "AG-A 000101"}]
 
 
 def test_mensagem_ignora_lixo_de_script():
@@ -141,3 +153,92 @@ async def test_upload_monta_client_state_e_descobre_o_campo():
     assert "TOKEN123" in estado and "uploadedFiles" in estado
     # O campo foi descoberto do HTML, não presumido.
     assert campo == "MeuUpload_ClientState"
+
+
+# --- postback AJAX (RadAjax/UpdatePanel) e RadNumericTextBox -----------------
+
+
+def test_delta_para_html_reconstroi_painel_e_ocultos():
+    # Formato do delta: `tamanho|tipo|id|conteudo` repetido. Interessam o painel
+    # (HTML novo da grid) e os hiddenField (o __VIEWSTATE novo).
+    delta = "12|updatePanel|pnl|<div>G</div>|5|hiddenField|__VIEWSTATE|NEWVS|"
+    html = sw._delta_para_html(delta)
+    assert "<div>G</div>" in html
+    assert 'name="__VIEWSTATE" value="NEWVS"' in html
+
+
+def test_reescreve_clientstate_preserva_outras_chaves():
+    atual = '{"enabled":true,"minValue":0,"validationText":"1","valueAsString":"1"}'
+    novo = executor._reescrever_clientstate(atual, "9761")
+    import json as _j
+
+    d = _j.loads(novo)
+    assert d["validationText"] == "9761"
+    assert d["valueAsString"] == "9761"
+    assert d["minValue"] == 0  # chave alheia ao valor foi mantida
+
+
+def test_reescreve_clientstate_sem_json_monta_minimo():
+    novo = executor._reescrever_clientstate("", "36")
+    import json as _j
+
+    d = _j.loads(novo)
+    assert d["validationText"] == "36" and d["valueAsString"] == "36"
+
+
+_TELA_AJAX = (
+    '<form><input type="hidden" name="__VIEWSTATE" value="v"/>'
+    '<input type="hidden" name="goHeader1_RadScriptManager1_TSM" value="tsm"/>'
+    '<div id="goHeader1_pnlGeralPanel">'
+    '<input type="text" name="txtNumeroLeituraFiltro" value=""/>'
+    '<input type="hidden" name="txtNumeroLeituraFiltro_ClientState"'
+    ' value="{&quot;validationText&quot;:&quot;&quot;,&quot;valueAsString&quot;:&quot;&quot;}"/>'
+    '<input type="image" name="imgFiltrar" id="imgFiltrar"/></div></form>'
+)
+
+
+@respx.mock
+async def test_postar_ajax_imagem_manda_scriptmanager_e_coordenadas():
+    capturado = {}
+
+    def _resp(request):
+        capturado["body"] = request.content.decode()
+        # Delta com uma grid nova, como o Ahreas devolve num postback parcial.
+        delta = "17|updatePanel|goHeader1_pnlGeralPanel|<table>OK</table>|"
+        return httpx.Response(200, text=delta)
+
+    respx.post(f"{_BASE}/tela.aspx").mock(side_effect=_resp)
+    sessao = sw.SessaoWeb(base_web=_BASE, cookies={})
+    sessao._ultimo_html["/tela.aspx"] = _TELA_AJAX
+    html = await sessao.postar(
+        "/tela.aspx", sw.campos_ocultos(_TELA_AJAX), "imgFiltrar", imagem=True
+    )
+    corpo = capturado["body"]
+    # O ScriptManager identifica painel|controle; a imagem manda .x/.y; o
+    # __EVENTTARGET fica vazio (o clique não é por evento).
+    assert "goHeader1%24RadScriptManager1=goHeader1%24pnlGeralPanel%7CimgFiltrar" in corpo
+    assert "imgFiltrar.x=1" in corpo and "imgFiltrar.y=1" in corpo
+    assert "__EVENTTARGET=&" in corpo or corpo.endswith("__EVENTTARGET=")
+    # A resposta delta virou página de novo.
+    assert "<table>OK</table>" in html
+
+
+async def test_executar_reescreve_clientstate_do_filtro(monkeypatch):
+    # Ao setar um RadNumericTextBox, o executor reescreve o _ClientState espelho
+    # sem que quem chama precise fabricar o JSON.
+    visto = {}
+
+    async def _postar_fake(caminho, campos, alvo, argumento="", imagem=False):
+        visto.update(campos)
+        return "<html><title>ok</title></html>"
+
+    sessao = sw.SessaoWeb(base_web=_BASE, cookies={})
+    sessao._ultimo_html["/tela.aspx"] = _TELA_AJAX
+    monkeypatch.setattr(sessao, "postar", _postar_fake)
+    await executor.executar(
+        sessao, "/tela.aspx", {"txtNumeroLeituraFiltro": "9761"}, "imgFiltrar", continuar=True
+    )
+    import json as _j
+
+    espelho = _j.loads(visto["txtNumeroLeituraFiltro_ClientState"])
+    assert espelho["validationText"] == "9761" and espelho["valueAsString"] == "9761"

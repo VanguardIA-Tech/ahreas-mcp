@@ -448,6 +448,11 @@ def _resultado_tela(r: Any) -> dict[str, Any]:
     if r.colunas or r.linhas:
         saida["colunas"] = list(r.colunas)
         saida["linhas"] = [list(linha) for linha in r.linhas]
+    if r.campos_editaveis:
+        # Os campos preenchíveis da grid (uma grade de edição): o nome a informar
+        # em `campos`, o valor atual e a que linha pertence (bloco/unidade).
+        saida["campos_editaveis"] = [dict(c) for c in r.campos_editaveis]
+        saida["total_campos_editaveis"] = len(r.campos_editaveis)
     return saida
 
 
@@ -455,13 +460,23 @@ def _resultado_tela(r: Any) -> dict[str, Any]:
 async def executar_acao_tela(
     caminho: Annotated[str, "Caminho da tela."],
     acao: Annotated[str, "A ação/botão a acionar (ver descrever_tela)."],
-    campos: Annotated[dict[str, str] | None, "Valores dos campos a preencher."] = None,
+    campos: Annotated[
+        dict[str, str] | None, "Valores dos campos a preencher (aceita muitos)."
+    ] = None,
+    continuar: Annotated[
+        bool, "true para agir sobre o estado da ação anterior (encadear passos na mesma tela)."
+    ] = False,
     confirmar: Annotated[bool, "Obrigatório quando a ação altera o ERP."] = False,
 ) -> dict[str, Any]:
-    """Aciona uma tela: preenche os campos e dispara o botão, por HTTP.
+    """Aciona uma tela: preenche campos e dispara um botão, por HTTP.
 
-    Consulta roda direto. Ação que altera o ERP exige confirmar=true e
-    AHREAS_PERMITIR_ESCRITA, e antes disso mostre à pessoa o que vai rodar.
+    Encadeia passos com `continuar=true`: filtrar → alterar → gravar mantêm o
+    estado da tela entre as chamadas, sem reabrir. Se a ação abre uma grade de
+    linhas (ex.: consumos, lançamentos em lote), TODAS as linhas vêm de uma vez
+    (a paginação é expandida automaticamente) e os campos preenchíveis de cada
+    linha voltam em `campos_editaveis` — informe-os todos de uma vez em `campos`
+    para gravar em massa. Consulta roda direto; ação que altera o ERP exige
+    confirmar=true e AHREAS_PERMITIR_ESCRITA.
     """
     from ahreas_mcp.telas import executor
     from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
@@ -474,8 +489,8 @@ async def executar_acao_tela(
                 "status": "precisa_confirmar",
                 "resumo": (
                     f"A ação {acao} na tela {caminho} pode alterar o ERP, com "
-                    f"{campos or 'os campos atuais'}. Mostre isso para a pessoa e só "
-                    "chame de novo com confirmar=true depois do sim."
+                    f"{len(campos) if campos else 'os'} campo(s). Mostre isso para a pessoa "
+                    "e só chame de novo com confirmar=true depois do sim."
                 ),
             }
         if not configuracao().permitir_escrita:
@@ -491,7 +506,9 @@ async def executar_acao_tela(
             }
     try:
         sessao = await _sessao_web()
-        resultado = await executor.executar(sessao, caminho, campos or {}, acao)
+        resultado = await executor.executar(
+            sessao, caminho, campos or {}, acao, continuar=continuar
+        )
     except (LoginWebRecusado, TelaIndisponivel) as erro:
         return {"ok": False, "erro": {"codigo": "ahreas.tela.indisponivel", "mensagem": str(erro)}}
     return _resultado_tela(resultado)

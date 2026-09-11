@@ -24,8 +24,6 @@ from ahreas_mcp import servidor
 from ahreas_mcp.catalogo import wsdl
 from ahreas_mcp.sessao import usuario as sessao
 
-
-
 _WEB = "https://ahreas.teste.local/condominioweb"
 
 

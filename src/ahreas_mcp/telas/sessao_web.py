@@ -39,9 +39,27 @@ _ESTADO = ("__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION", "__VIEWST
 # O botão de login não é o `btnEntrar` visível: ele dispara este alvo de postback.
 _ALVO_LOGIN = "goLogin$hbLogin"
 
+# O ASP.NET decide se libera o postback assíncrono (partial rendering) olhando o
+# User-Agent: um agente desconhecido é tratado como navegador incapaz, e o
+# RadScriptManager recusa o AJAX com "SupportsPartialRendering=false". Um UA de
+# navegador real destrava as telas que carregam a grid por RadAjax (consumos).
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
 _INPUT = re.compile(r"<input\b[^>]*>", re.I)
 _NAME = re.compile(r'name="([^"]+)"')
 _VALUE = re.compile(r'value="([^"]*)"')
+
+# As telas com grid usam ASP.NET UpdatePanel + RadAjax: o postback é parcial, o
+# ScriptManager diz qual painel e qual controle disparou, e a resposta é um
+# "delta" em vez da página inteira. Reconhecer isso é o que faz filtrar/paginar
+# funcionar por HTTP — sem, a grid nunca chega.
+# O ScriptManager não aparece como input próprio — só o campo `_TSM` dele. O
+# name que o postback AJAX usa é o id dele (sem o `_TSM`), com `_` virando `$`.
+_RE_SCRIPTMANAGER = re.compile(r'name="([^"]*RadScriptManager\d+)_TSM"')
+_RE_UPDATEPANEL = re.compile(r'id="([^"]*pnlGeralPanel)"')
 
 
 class LoginWebRecusado(Exception):
@@ -74,6 +92,38 @@ def _logado(html: str) -> bool:
     return "goLogin_idusuario" not in html
 
 
+def _delta_para_html(delta: str) -> str:
+    """Reconstrói uma página a partir de um delta de UpdatePanel do ASP.NET AJAX.
+
+    O delta é uma sequência `tamanho|tipo|id|conteúdo` repetida. Interessam dois
+    tipos: `updatePanel` (o HTML novo da parte da tela que mudou — as grids) e
+    `hiddenField` (o novo __VIEWSTATE e afins, que o próximo postback precisa).
+    Junta os painéis e devolve os campos escondidos como inputs, para o resto do
+    pipeline tratar a resposta como se fosse uma página inteira.
+    """
+    partes: list[str] = []
+    ocultos: list[str] = []
+    pos = 0
+    n = len(delta)
+    while pos < n:
+        try:
+            i1 = delta.index("|", pos)
+            tamanho = int(delta[pos:i1])
+            i2 = delta.index("|", i1 + 1)
+            tipo = delta[i1 + 1 : i2]
+            i3 = delta.index("|", i2 + 1)
+            ident = delta[i2 + 1 : i3]
+            conteudo = delta[i3 + 1 : i3 + 1 + tamanho]
+            pos = i3 + 1 + tamanho + 1
+        except (ValueError, IndexError):
+            break
+        if tipo == "updatePanel":
+            partes.append(conteudo)
+        elif tipo == "hiddenField":
+            ocultos.append(f'<input type="hidden" name="{ident}" value="{conteudo}"/>')
+    return "".join(ocultos) + "".join(partes)
+
+
 @dataclass
 class SessaoWeb:
     """Uma sessão autenticada no Ahreas web, viva enquanto o cookie valer.
@@ -85,6 +135,11 @@ class SessaoWeb:
 
     base_web: str
     cookies: dict[str, str] = field(default_factory=dict)
+    # O último HTML de cada tela aberta/acionada, por caminho. É o que permite
+    # encadear postbacks (filtrar → alterar → gravar) sem reabrir a tela e perder
+    # o resultado do passo anterior — cada tela WebForms depende do estado que
+    # ela mesma acabou de emitir.
+    _ultimo_html: dict[str, str] = field(default_factory=dict)
 
     def _cliente(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -92,6 +147,7 @@ class SessaoWeb:
             cookies=self.cookies,
             follow_redirects=True,
             timeout=configuracao().timeout_segundos,
+            headers={"User-Agent": _UA},
         )
 
     async def abrir(self, caminho: str) -> tuple[str, dict[str, str]]:
@@ -101,19 +157,83 @@ class SessaoWeb:
             self.cookies.update({k: v for k, v in r.cookies.items()})
         if not _logado(r.text):
             raise LoginWebRecusado("A sessão web expirou. Faça login novamente.")
+        self._ultimo_html[caminho] = r.text
         return r.text, _campos_ocultos(r.text)
 
+    def estado_atual(self, caminho: str) -> tuple[str, dict[str, str]] | None:
+        """O último HTML e o estado oculto desta tela, se já foi tocada nesta sessão."""
+        html = self._ultimo_html.get(caminho)
+        return (html, _campos_ocultos(html)) if html is not None else None
+
     async def postar(
-        self, caminho: str, campos: dict[str, str], alvo: str, argumento: str = ""
+        self,
+        caminho: str,
+        campos: dict[str, str],
+        alvo: str,
+        argumento: str = "",
+        imagem: bool = False,
     ) -> str:
-        """Replica um postback: reenvia o formulário com o alvo do botão acionado."""
+        """Replica um postback: reenvia o formulário com o alvo do botão acionado.
+
+        Detecta sozinho as telas com grid (ASP.NET UpdatePanel + RadAjax): nelas
+        o postback é parcial — o ScriptManager identifica o painel e o controle
+        que disparou, um cabeçalho marca o modo delta, e a resposta é um delta
+        que é reconstruído em página. Nas demais telas, é um postback comum.
+
+        Um botão de imagem (`<input type=image>`) posta pelas coordenadas do
+        clique (`alvo.x`/`alvo.y`), não pelo `__EVENTTARGET`.
+        """
+        anterior = self._ultimo_html.get(caminho, "")
+        sm = _RE_SCRIPTMANAGER.search(anterior)
+        painel = _RE_UPDATEPANEL.search(anterior)
+        ajax = sm is not None and painel is not None
+
         corpo = dict(campos)
-        corpo["__EVENTTARGET"] = alvo
-        corpo["__EVENTARGUMENT"] = argumento
+        cabecalhos = {"Referer": f"{self.base_web}{caminho}"}
+        if ajax:
+            # O ScriptManager carrega "painel|controle": é assim que o servidor
+            # sabe o que atualizar e quem disparou. O name do campo é o id dele
+            # com `_`→`$` (ASP.NET troca `$` do name por `_` no id).
+            painel_nome = painel.group(1).replace("_", "$")  # type: ignore[union-attr]
+            sm_campo = sm.group(1).replace("_", "$")  # type: ignore[union-attr]
+            corpo[sm_campo] = f"{painel_nome}|{alvo}"
+            cabecalhos["X-MicrosoftAjax"] = "Delta=true"
+            cabecalhos["X-Requested-With"] = "XMLHttpRequest"
+        # Um <input type=image> registra o clique pelas coordenadas `.x`/`.y` — o
+        # ASP.NET identifica o ImageButton por elas, não pelo __EVENTTARGET. Sem
+        # elas o servidor só reecoa o painel, sem disparar o botão. Isso vale
+        # inclusive no postback assíncrono, onde o campo do ScriptManager (que
+        # diz qual painel atualizar) convive com o `.x`/`.y` (que diz quem
+        # disparou). Um controle comum em AJAX (o pager) manda o alvo no
+        # __EVENTTARGET normalmente.
+        if imagem:
+            corpo[f"{alvo}.x"] = "1"
+            corpo[f"{alvo}.y"] = "1"
+            corpo.setdefault("__EVENTTARGET", "")
+            corpo.setdefault("__EVENTARGUMENT", "")
+        else:
+            corpo["__EVENTTARGET"] = alvo
+            corpo["__EVENTARGUMENT"] = argumento
+
         async with self._cliente() as c:
-            r = await c.post(caminho, data=corpo, headers={"Referer": f"{self.base_web}{caminho}"})
+            r = await c.post(caminho, data=corpo, headers=cabecalhos)
             self.cookies.update({k: v for k, v in r.cookies.items()})
-        return r.text
+
+        texto = r.text
+        # Uma resposta delta começa com "tamanho|tipo|...". Reconstrói juntando o
+        # estado anterior (campos fora do painel) com o painel novo e o ViewState
+        # atualizado, para o próximo passo ver a tela inteira.
+        if ajax and re.match(r"^\d+\|", texto):
+            reconstruido = _delta_para_html(texto)
+            campos_novos = _campos_ocultos(anterior)
+            campos_novos.update(_campos_ocultos(reconstruido))
+            ocultos = "".join(
+                f'<input type="hidden" name="{n}" value="{htmlmod.escape(v, quote=True)}"/>'
+                for n, v in campos_novos.items()
+            )
+            texto = reconstruido + ocultos
+        self._ultimo_html[caminho] = texto
+        return texto
 
     async def enviar_arquivo(
         self, html_tela: str, caminho: str, nome: str, conteudo: bytes, content_type: str
@@ -184,7 +304,10 @@ async def entrar(email: str, senha: str) -> SessaoWeb:
     """
     base = _base_web()
     async with httpx.AsyncClient(
-        base_url=base, follow_redirects=True, timeout=configuracao().timeout_segundos
+        base_url=base,
+        follow_redirects=True,
+        timeout=configuracao().timeout_segundos,
+        headers={"User-Agent": _UA},
     ) as c:
         inicial = await c.get("/")
         campos = _campos_ocultos(inicial.text)

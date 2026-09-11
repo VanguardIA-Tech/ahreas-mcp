@@ -50,9 +50,7 @@ def abrir(
 ) -> SessaoUsuario:
     """Registra a sessão de quem acabou de logar. `id_sessao` é o identificador
     opaco que o token de acesso carrega (nunca o usuário em claro)."""
-    sessao = SessaoUsuario(
-        credencial=credencial, expira_em=time.time() + vida_segundos, web=web
-    )
+    sessao = SessaoUsuario(credencial=credencial, expira_em=time.time() + vida_segundos, web=web)
     _sessoes[id_sessao] = sessao
     return sessao
 

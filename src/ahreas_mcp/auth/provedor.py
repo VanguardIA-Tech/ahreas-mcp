@@ -106,9 +106,7 @@ class AhreasAuthProvider(OAuthProvider):
         # que a pessoa autentica com sucesso no Ahreas.
         return f"{configuracao().public_url}/ahreas/login?pedido={pedido}"
 
-    async def _emitir_code(
-        self, pendencia: _Pendencia, credencial: Credencial, web: Any
-    ) -> str:
+    async def _emitir_code(self, pendencia: _Pendencia, credencial: Credencial, web: Any) -> str:
         params = pendencia.params
         valor = f"ac_{secrets.token_hex(24)}"
         code = AuthorizationCode(
