@@ -1,15 +1,17 @@
-"""O que o WSDL não conta: se um método lê ou grava, e em que fluxo ele vive.
+"""A única coisa que o WSDL não conta: se um método lê ou grava.
 
-O WSDL da instalação dá o catálogo e as assinaturas, mas não diz se um método é
-uma consulta ou uma operação que altera o ERP — e o nome engana (`ContasPara
-Aprovacao` só consulta; `AprovacaoPagtosProcessar` grava). Errar isso é grave:
-um método de escrita tratado como leitura roda sem confirmação.
+Isto não é regra de negócio, e não há nada da administradora aqui. É o mínimo
+que o duplo-check exige: para decidir se uma execução roda direto (consulta) ou
+pede confirmação (alteração), é preciso saber o efeito do método — e o WSDL do
+Ahreas lista os métodos e parâmetros, mas não marca qual grava.
 
-Por isso o efeito de cada método foi revisado à mão, a partir de sondagem real
-contra uma instalação (mensagens de validação do próprio ERP) e da documentação
-oficial. O que não estiver mapeado aqui cai numa heurística **conservadora**:
-qualquer nome que cheire a escrita vira `INCERTO`, nunca `LEITURA` — assim um
-método novo que o Ahreas adicione não escapa como consulta.
+Só dois efeitos, portanto: LEITURA roda direto; ESCRITA pede confirmação. Onde o
+nome do método não deixa claro, o padrão é ESCRITA — na dúvida, confirma. Um
+método novo que o Ahreas adicione, com nome que cheira a alteração, também cai em
+ESCRITA. Nunca o contrário: nada passa como leitura por engano.
+
+A lista foi montada a partir de sondagem real contra uma instalação (as próprias
+mensagens do Ahreas) — não de um palpite.
 """
 
 from __future__ import annotations
@@ -21,17 +23,15 @@ from enum import StrEnum
 class Efeito(StrEnum):
     LEITURA = "leitura"
     ESCRITA = "escrita"
-    # Existe, mas não foi possível confirmar que é só leitura. Tratado como
-    # escrita para efeito de confirmação: pode ter efeito colateral (emitir
-    # boleto, enviar e-mail/SMS, iniciar processo).
-    INCERTO = "incerto"
 
 
-# Efeito revisado à mão. Chave é o nome-base, sem os sufixos _XML/_Json/_PDF/_Url
-# — todas as variantes de um método compartilham o efeito. Só entram aqui os
-# métodos que NÃO são leitura simples; o resto é leitura por padrão.
+# Métodos que alteram o ERP, revisados um a um. Chave é o nome-base, sem os
+# sufixos _XML/_Json/_PDF/_Url — todas as variantes compartilham o efeito.
+# Inclui também os de efeito não confirmado (emitem documento/cobrança ou
+# disparam envio): na dúvida, entram aqui para exigir confirmação.
 _ESCRITA_BASE: frozenset[str] = frozenset(
     {
+        # Gravam, sem ambiguidade.
         "AprovacaoContasPagar",
         "AprovacaoPagtosProcessar",
         "BoletoAtualizadoConfirmacao",
@@ -51,33 +51,25 @@ _ESCRITA_BASE: frozenset[str] = frozenset(
         "AtualizacaoCadastral_Aut_Dados",
         "AtualizacaoCadastral_Aut_Dados_Cliente",
         "AtualizacaoCadastral_Aut_Endereco",
-    }
-)
-
-# Efeito não confirmado: emitem documento/cobrança ou disparam envio, e a
-# sondagem não descartou efeito colateral. Tratados como escrita na execução.
-_INCERTO_BASE: frozenset[str] = frozenset(
-    {
-        "CartaCobranca",  # processou 45s+ na sondagem; pode gerar cartas em lote
-        "ProcessoCobranca",  # "Processo de Cobrança": consulta pesada ou início de processo
-        "SegundaViaBoletos",  # emissão de 2ª via pode gerar registro bancário
-        "SegundaViaBoletos_Chatbot",  # tem enviar_email/enviar_sms
-        "SegundaViaBoletos_Parcela_Chatbot",
-        "SegundaViaBoletos_PDF_Personalizado",
-        "CertidaoNegativaDebitos",  # gera certidão; efeito não verificado
-        # A família de atualização cadastral recebe dados/URLs como entrada. As
-        # variantes `_Aut_` gravam (já em _ESCRITA_BASE); estas outras submetem
-        # ou consultam um protocolo — não confirmado, então tratadas como escrita.
         "AtualizacaoCadastral_Dados",
         "AtualizacaoCadastral_Dados_Cliente",
         "AtualizacaoCadastral_Contatos",
         "AtualizacaoCadastral_Endereco",
         "AtualizacaoCadastral_Documentos",
+        # Efeito não confirmado: emitem boleto/certidão/carta ou disparam envio.
+        # Ficam em escrita por segurança até verificar contra a instalação.
+        "CartaCobranca",
+        "ProcessoCobranca",
+        "SegundaViaBoletos",
+        "SegundaViaBoletos_Chatbot",
+        "SegundaViaBoletos_Parcela_Chatbot",
+        "SegundaViaBoletos_PDF_Personalizado",
+        "CertidaoNegativaDebitos",
     }
 )
 
 # Métodos que a heurística marcaria como escrita mas são, comprovadamente,
-# leitura. A sondagem devolveu dados de consulta para todos eles.
+# consulta. A sondagem devolveu dados de leitura para todos eles.
 _LEITURA_APESAR_DO_NOME: frozenset[str] = frozenset(
     {
         "AprovacaoPagtosConsultar",
@@ -86,9 +78,8 @@ _LEITURA_APESAR_DO_NOME: frozenset[str] = frozenset(
     }
 )
 
-# Radicais que denunciam escrita num nome não catalogado. Conservador de
-# propósito: preferir um falso "INCERTO" (que só pede confirmação) a um falso
-# "LEITURA" (que rodaria sem ela).
+# Radicais que denunciam alteração num nome não catalogado. Conservador de
+# propósito: preferir uma confirmação a mais a uma escrita sem confirmação.
 _RADICAIS_ESCRITA = re.compile(
     r"(inserir|processar|geracao|recepcao|confirmacao|remessa|_aut_|inserirrateio|"
     r"_operacao|excluir|cancelar|gravar|atualizar|atualizacaocadastral|aprovacao|"
@@ -101,8 +92,8 @@ def base(nome: str) -> str:
     """O nome-base do método, sem sufixo de formato ou de variante.
 
     O Ahreas usa tanto `_XML` quanto `XML` colado (`AprovacaoPagtosProcessarXML`),
-    então ambos são removidos — senão uma variante de escrita seria rotulada como
-    incerta por não casar com a lista revisada.
+    então ambos são removidos — senão uma variante de escrita seria classificada
+    como leitura por não casar com a lista revisada.
     """
     for sufixo in ("_XML", "_Json", "_PDF", "_Url", "XML", "Json"):
         if nome.endswith(sufixo):
@@ -116,14 +107,12 @@ def efeito(nome: str) -> Efeito:
         return Efeito.LEITURA
     if b in _ESCRITA_BASE:
         return Efeito.ESCRITA
-    if b in _INCERTO_BASE:
-        return Efeito.INCERTO
-    # Não catalogado: heurística conservadora.
+    # Não catalogado: na dúvida, escrita.
     if _RADICAIS_ESCRITA.search(b):
-        return Efeito.INCERTO
+        return Efeito.ESCRITA
     return Efeito.LEITURA
 
 
 def grava(nome: str) -> bool:
     """Se executar este método exige confirmação e escrita liberada."""
-    return efeito(nome) in (Efeito.ESCRITA, Efeito.INCERTO)
+    return efeito(nome) is Efeito.ESCRITA

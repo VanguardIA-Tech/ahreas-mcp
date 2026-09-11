@@ -25,13 +25,13 @@ from ahreas_mcp.semantica.efeitos import Efeito, base, efeito, grava
         # Consulta simples.
         ("TaxaInadimplencia_XML", Efeito.LEITURA),
         ("ListagemBoletos", Efeito.LEITURA),
-        # Efeito não verificado -> incerto.
-        ("CartaCobranca", Efeito.INCERTO),
-        ("SegundaViaBoletos_Chatbot", Efeito.INCERTO),
+        # Efeito não confirmado: por segurança, escrita (pede confirmação).
+        ("CartaCobranca", Efeito.ESCRITA),
+        ("SegundaViaBoletos_Chatbot", Efeito.ESCRITA),
         # Família de atualização cadastral: recebe dados como entrada, nunca
         # deve rodar sem confirmação.
-        ("AtualizacaoCadastral_Documentos", Efeito.INCERTO),
-        ("AtualizacaoCadastral_Dados", Efeito.INCERTO),
+        ("AtualizacaoCadastral_Documentos", Efeito.ESCRITA),
+        ("AtualizacaoCadastral_Dados", Efeito.ESCRITA),
         # Consultar continua leitura mesmo com "Aprovacao" no radical.
         ("AprovacaoPagtosConsultarXML", Efeito.LEITURA),
     ],
@@ -56,9 +56,9 @@ def test_base_remove_sufixo():
 
 
 def test_metodo_desconhecido_com_cara_de_escrita_nao_e_leitura():
-    # Um método novo que o Ahreas adicione: se o nome cheira a escrita, cai em
-    # incerto (pede confirmação), nunca em leitura silenciosa.
-    assert efeito("GravarAlgumaCoisaNova") is Efeito.INCERTO
+    # Um método novo que o Ahreas adicione: se o nome cheira a alteração, pede
+    # confirmação, nunca roda como leitura silenciosa.
+    assert efeito("GravarAlgumaCoisaNova") is Efeito.ESCRITA
     assert grava("GravarAlgumaCoisaNova")
 
 

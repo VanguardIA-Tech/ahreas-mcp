@@ -155,14 +155,8 @@ async def descrever_metodo(
     }
     if ef is Efeito.ESCRITA:
         resposta["metodo"]["observacao"] = (
-            "Grava no ERP. Exige confirmar=true e AHREAS_PERMITIR_ESCRITA ligado. "
-            "Mostre à pessoa o que vai rodar antes de confirmar."
-        )
-    elif ef is Efeito.INCERTO:
-        resposta["metodo"]["observacao"] = (
-            "Efeito não verificado: pode ter efeito colateral (emitir boleto, "
-            "enviar e-mail/SMS, iniciar processo). Tratado como escrita — exige "
-            "confirmar=true."
+            "Pode alterar o ERP. Exige confirmar=true e AHREAS_PERMITIR_ESCRITA "
+            "ligado. Mostre à pessoa o que vai rodar antes de confirmar."
         )
     return resposta
 
@@ -218,18 +212,15 @@ async def executar_metodo(
             "erro": {"codigo": "ahreas.sessao_expirada", "mensagem": str(erro)},
         }
 
-    ef = efeito(nome)
     if grava(nome):
         if not confirmar:
             return {
                 "ok": False,
                 "status": "precisa_confirmar",
-                "efeito": ef.value,
                 "resumo": (
-                    f"O método {nome} "
-                    + ("grava no ERP" if ef is Efeito.ESCRITA else "pode ter efeito no ERP")
-                    + f", com {parametros or 'nenhum parâmetro'}. Mostre isso para a "
-                    "pessoa e só chame de novo com confirmar=true depois do sim."
+                    f"O método {nome} pode alterar o ERP, com "
+                    f"{parametros or 'nenhum parâmetro'}. Mostre isso para a pessoa "
+                    "e só chame de novo com confirmar=true depois do sim."
                 ),
             }
         if not configuracao().permitir_escrita:
