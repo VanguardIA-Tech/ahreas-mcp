@@ -326,3 +326,184 @@ async def diagnostico() -> dict[str, Any]:
     except Exception as erro:  # noqa: BLE001
         resultado["credencial"] = f"recusada: {erro}"
     return resultado
+
+
+# --- Modo telas: o que o operador faz no Web, por HTTP -----------------------
+#
+# O web service não expõe tudo — a maior parte das operações vive só nas telas
+# ASP.NET. Estas três ferramentas dão acesso a elas com a mesma forma buscar →
+# descrever → executar: o catálogo de telas vem do menu da instalação, nada é
+# escrito à mão, e uma tela que grava passa pela mesma confirmação.
+
+
+async def _sessao_web() -> Any:
+    """A sessão web de quem está chamando (por ora, a do modo local)."""
+    from ahreas_mcp.telas.servico import sessao_stdio
+
+    return await sessao_stdio()
+
+
+@mcp.tool
+async def listar_telas(
+    busca: Annotated[str | None, "Texto no nome da tela (ex.: 'consumo', 'boleto')."] = None,
+    limite: Annotated[int, "Quantas devolver."] = 40,
+) -> dict[str, Any]:
+    """Acha telas do Ahreas web pela intenção, lidas do menu desta instalação."""
+    from ahreas_mcp.telas import catalogo
+
+    sessao = await _sessao_web()
+    telas = await catalogo.buscar(sessao, busca)
+    return {
+        "total": len(telas),
+        "mostrando": min(limite, len(telas)),
+        "telas": [{"nome": t.nome, "caminho": t.caminho} for t in telas[:limite]],
+    }
+
+
+@mcp.tool
+async def descrever_tela(
+    caminho: Annotated[str, "Caminho da tela, como em listar_telas."],
+) -> dict[str, Any]:
+    """Detalha uma tela: os campos que ela pede e as ações (botões) disponíveis."""
+    from ahreas_mcp.telas import executor, formulario
+
+    sessao = await _sessao_web()
+    html, _ = await sessao.abrir(caminho)
+    form = formulario.analisar(html)
+    return {
+        "ok": True,
+        "caminho": caminho,
+        "campos": [
+            {"nome": c.nome, "tipo": c.tipo, **({"opcoes": list(c.opcoes)} if c.opcoes else {})}
+            for c in form.campos
+        ],
+        "acoes": [
+            {
+                "acao": a.alvo,
+                "rotulo": a.rotulo,
+                "efeito": executor.efeito_da_acao(a.rotulo + a.alvo).value,
+            }
+            for a in form.acoes
+        ],
+    }
+
+
+def _resultado_tela(r: Any) -> dict[str, Any]:
+    saida: dict[str, Any] = {"ok": r.ok, "titulo": r.titulo}
+    if r.mensagem:
+        saida["mensagem"] = r.mensagem
+    if r.colunas or r.linhas:
+        saida["colunas"] = list(r.colunas)
+        saida["linhas"] = [list(linha) for linha in r.linhas]
+    return saida
+
+
+@mcp.tool
+async def executar_acao_tela(
+    caminho: Annotated[str, "Caminho da tela."],
+    acao: Annotated[str, "A ação/botão a acionar (ver descrever_tela)."],
+    campos: Annotated[dict[str, str] | None, "Valores dos campos a preencher."] = None,
+    confirmar: Annotated[bool, "Obrigatório quando a ação altera o ERP."] = False,
+) -> dict[str, Any]:
+    """Aciona uma tela: preenche os campos e dispara o botão, por HTTP.
+
+    Consulta roda direto. Ação que altera o ERP exige confirmar=true e
+    AHREAS_PERMITIR_ESCRITA, e antes disso mostre à pessoa o que vai rodar.
+    """
+    from ahreas_mcp.telas import executor
+    from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
+
+    ef = executor.efeito_da_acao(acao)
+    if ef is executor.EfeitoAcao.ESCRITA:
+        if not confirmar:
+            return {
+                "ok": False,
+                "status": "precisa_confirmar",
+                "resumo": (
+                    f"A ação {acao} na tela {caminho} pode alterar o ERP, com "
+                    f"{campos or 'os campos atuais'}. Mostre isso para a pessoa e só "
+                    "chame de novo com confirmar=true depois do sim."
+                ),
+            }
+        if not configuracao().permitir_escrita:
+            return {
+                "ok": False,
+                "erro": {
+                    "codigo": "ahreas.escrita.desligada",
+                    "mensagem": (
+                        "Ações que alteram o ERP estão desligadas neste servidor. O "
+                        "administrador liga em AHREAS_PERMITIR_ESCRITA."
+                    ),
+                },
+            }
+    try:
+        sessao = await _sessao_web()
+        resultado = await executor.executar(sessao, caminho, campos or {}, acao)
+    except (LoginWebRecusado, TelaIndisponivel) as erro:
+        return {"ok": False, "erro": {"codigo": "ahreas.tela.indisponivel", "mensagem": str(erro)}}
+    return _resultado_tela(resultado)
+
+
+@mcp.tool
+async def importar_arquivo_em_tela(
+    caminho: Annotated[str, "Caminho da tela de importação (ex.: a de consumo de gás/água)."],
+    nome_arquivo: Annotated[str, "Nome do arquivo, ex. 'leituras.txt'."],
+    conteudo: Annotated[str, "Conteúdo do arquivo em texto."],
+    acao_processar: Annotated[str, "Botão que processa a importação."] = "btnProcessar",
+    campos: Annotated[dict[str, str] | None, "Campos extras (ex.: separar por bloco)."] = None,
+    confirmar: Annotated[bool, "Obrigatório: a importação grava no ERP."] = False,
+) -> dict[str, Any]:
+    """Sobe um arquivo numa tela de importação e, com confirmação, processa.
+
+    Sem confirmar, apenas envia o arquivo e devolve o que a tela reconheceu (por
+    exemplo, os códigos de tarifa que ela preencheu) — sem gravar. Com
+    confirmar=true e escrita liberada, aciona o processamento, que grava no ERP.
+    """
+    from ahreas_mcp.telas import executor
+    from ahreas_mcp.telas.sessao_web import LoginWebRecusado, TelaIndisponivel
+
+    try:
+        sessao = await _sessao_web()
+        html, estado = await sessao.abrir(caminho)
+        client_state = await sessao.enviar_arquivo(
+            html, caminho, nome_arquivo, conteudo.encode("utf-8"), "text/plain"
+        )
+        # Postback que faz a tela reconhecer o arquivo (não grava).
+        corpo = dict(estado)
+        corpo["RdUpArquivo_ClientState"] = client_state
+        html_reconhecido = await sessao.postar(caminho, corpo, "btnSelecionar")
+    except (LoginWebRecusado, TelaIndisponivel) as erro:
+        return {"ok": False, "erro": {"codigo": "ahreas.tela.indisponivel", "mensagem": str(erro)}}
+
+    if not confirmar:
+        # Mostra o que a tela reconheceu, sem processar.
+        form = executor.fo.analisar(html_reconhecido)
+        preenchidos = {c.nome: "" for c in form.campos}
+        return {
+            "ok": True,
+            "status": "arquivo_enviado_sem_processar",
+            "arquivo_reconhecido": nome_arquivo in html_reconhecido,
+            "resumo": (
+                f"Arquivo {nome_arquivo} enviado e reconhecido pela tela {caminho}. "
+                "Processar vai gravar as leituras no ERP — chame de novo com "
+                "confirmar=true depois de a pessoa revisar."
+            ),
+            "campos_da_tela": list(preenchidos),
+        }
+    if not configuracao().permitir_escrita:
+        return {
+            "ok": False,
+            "erro": {
+                "codigo": "ahreas.escrita.desligada",
+                "mensagem": "A importação grava no ERP; ligue AHREAS_PERMITIR_ESCRITA.",
+            },
+        }
+    # Reenvia com o arquivo já reconhecido e aciona o processamento.
+    from ahreas_mcp.telas.sessao_web import campos_ocultos
+
+    corpo = dict(campos_ocultos(html_reconhecido))
+    corpo["RdUpArquivo_ClientState"] = client_state
+    for nome, valor in (campos or {}).items():
+        corpo[nome] = valor
+    html_final = await sessao.postar(caminho, corpo, acao_processar)
+    return _resultado_tela(executor._resultado(html_final))

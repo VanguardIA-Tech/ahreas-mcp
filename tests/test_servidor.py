@@ -65,16 +65,24 @@ def _mock_wsdl():
 
 
 @respx.mock
-async def test_lista_as_quatro_ferramentas():
+async def test_lista_as_ferramentas():
     _mock_wsdl()
     async with Client(servidor.mcp) as c:
         nomes = {t.name for t in await c.list_tools()}
-    assert nomes == {
+    # As quatro do web service (SOAP)...
+    assert {
         "listar_funcionalidades",
         "descrever_metodo",
         "executar_metodo",
         "diagnostico",
-    }
+    } <= nomes
+    # ...e as quatro do modo telas (Web).
+    assert {
+        "listar_telas",
+        "descrever_tela",
+        "executar_acao_tela",
+        "importar_arquivo_em_tela",
+    } <= nomes
 
 
 @respx.mock

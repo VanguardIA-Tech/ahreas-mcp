@@ -45,6 +45,13 @@ class Configuracao(BaseSettings):
     usuario: str | None = None
     senha: SecretStr | None = None
 
+    # --- Login do modo telas (Web) no stdio --------------------------------
+    # O painel web do Ahreas loga por e-mail, com a mesma senha do usuário. É
+    # esse login que dá acesso às telas (o "modo telas"). No stdio, informe o
+    # e-mail aqui; a senha, se omitida, reaproveita AHREAS_SENHA.
+    web_email: str | None = None
+    web_senha: SecretStr | None = None
+
     # --- Servidor remoto e OAuth (modo multiusuário) -----------------------
     # A URL pública por onde os clientes MCP chegam. É a âncora do OAuth: entra
     # no issuer, no audience dos tokens e nos metadados de descoberta. Sem ela,
