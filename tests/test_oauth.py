@@ -24,18 +24,26 @@ from ahreas_mcp import servidor
 from ahreas_mcp.catalogo import wsdl
 from ahreas_mcp.sessao import usuario as sessao
 
-_ADM = "https://ahreas.teste.local/administracaoweb/wsdocumentos.asmx"
 
 
-def _valida_result(texto_interno: str) -> httpx.Response:
-    corpo = (
-        '<?xml version="1.0"?><soap:Envelope '
-        'xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
-        '<ValidaCredencialResponse xmlns="http://gosati.com.br/webservices/">'
-        f"<ValidaCredencialResult>{texto_interno}</ValidaCredencialResult>"
-        "</ValidaCredencialResponse></soap:Body></soap:Envelope>"
+_WEB = "https://ahreas.teste.local/condominioweb"
+
+
+def _pagina_login_web() -> str:
+    return (
+        '<form><input type="hidden" name="__VIEWSTATE" value="v"/>'
+        '<input type="hidden" name="__EVENTVALIDATION" value="e"/>'
+        '<input name="goLogin$idusuario" id="goLogin_idusuario"/>'
+        '<input name="goLogin$idpassword" id="goLogin_idpassword" type="password"/></form>'
     )
-    return httpx.Response(200, text=corpo)
+
+
+def _mock_login_web(*, sucesso: bool) -> None:
+    # O login web: GET pega o estado, POST autentica. Sucesso = home sem o campo
+    # de login; recusa = a própria tela de login de volta.
+    respx.get(f"{_WEB}/").mock(return_value=httpx.Response(200, text=_pagina_login_web()))
+    home = "<div>Olá</div>" if sucesso else _pagina_login_web()
+    respx.post(f"{_WEB}/").mock(return_value=httpx.Response(200, text=home))
 
 
 @pytest.fixture(autouse=True)
@@ -102,9 +110,7 @@ async def _ate_o_login(c) -> str:
 
 @respx.mock
 async def test_login_valido_emite_code_e_abre_sessao():
-    respx.post(_ADM).mock(
-        return_value=_valida_result("Conexão com o web service estabelecida com sucesso!")
-    )
+    _mock_login_web(sucesso=True)
     app = servidor.mcp.http_app(path="/mcp")
     async with await _cliente(app) as c, app.router.lifespan_context(app):
         pedido = await _ate_o_login(c)
@@ -118,7 +124,7 @@ async def test_login_valido_emite_code_e_abre_sessao():
 
 @respx.mock
 async def test_login_recusado_nao_emite_code():
-    respx.post(_ADM).mock(return_value=_valida_result("Usuário ou senha inválido."))
+    _mock_login_web(sucesso=False)
     app = servidor.mcp.http_app(path="/mcp")
     async with await _cliente(app) as c, app.router.lifespan_context(app):
         pedido = await _ate_o_login(c)
@@ -132,9 +138,7 @@ async def test_login_recusado_nao_emite_code():
 
 @respx.mock
 async def test_dança_completa_ate_o_token():
-    respx.post(_ADM).mock(
-        return_value=_valida_result("Conexão com o web service estabelecida com sucesso!")
-    )
+    _mock_login_web(sucesso=True)
     app = servidor.mcp.http_app(path="/mcp")
     async with await _cliente(app) as c, app.router.lifespan_context(app):
         # DCR

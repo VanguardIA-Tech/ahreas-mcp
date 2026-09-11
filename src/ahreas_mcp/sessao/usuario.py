@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from ahreas_mcp.soap.cliente import Credencial
 
@@ -29,6 +30,9 @@ from ahreas_mcp.soap.cliente import Credencial
 class SessaoUsuario:
     credencial: Credencial
     expira_em: float
+    # A sessão web da pessoa (cookie do painel), quando o login web deu certo.
+    # É por ela que as ferramentas de tela agem no nome de quem está conectado.
+    web: Any = None
 
     @property
     def usuario(self) -> str:
@@ -41,10 +45,14 @@ class SessaoUsuario:
 _sessoes: dict[str, SessaoUsuario] = {}
 
 
-def abrir(id_sessao: str, credencial: Credencial, vida_segundos: float) -> SessaoUsuario:
+def abrir(
+    id_sessao: str, credencial: Credencial, vida_segundos: float, web: Any = None
+) -> SessaoUsuario:
     """Registra a sessão de quem acabou de logar. `id_sessao` é o identificador
     opaco que o token de acesso carrega (nunca o usuário em claro)."""
-    sessao = SessaoUsuario(credencial=credencial, expira_em=time.time() + vida_segundos)
+    sessao = SessaoUsuario(
+        credencial=credencial, expira_em=time.time() + vida_segundos, web=web
+    )
     _sessoes[id_sessao] = sessao
     return sessao
 

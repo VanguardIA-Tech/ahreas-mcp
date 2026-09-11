@@ -37,11 +37,11 @@ def pagina_login(pedido: str, erro: str | None = None) -> str:
 <body>
   <form method="post" action="/ahreas/login">
     <h1>Ahreas</h1>
-    <p class="sub">Entre com o seu usuário e senha do Ahreas.</p>
+    <p class="sub">Entre com o seu e-mail e senha do Ahreas.</p>
     {bloco_erro}
     <input type="hidden" name="pedido" value="{escape(pedido)}">
-    <label for="usuario">Usuário</label>
-    <input id="usuario" name="usuario" autocomplete="username" autofocus required>
+    <label for="usuario">E-mail</label>
+    <input id="usuario" name="usuario" type="email" autocomplete="username" autofocus required>
     <label for="senha">Senha</label>
     <input id="senha" name="senha" type="password" autocomplete="current-password" required>
     <button type="submit">Entrar</button>

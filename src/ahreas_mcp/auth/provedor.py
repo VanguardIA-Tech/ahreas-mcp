@@ -41,7 +41,8 @@ from starlette.routing import Route
 from ahreas_mcp.auth.paginas import pagina_login
 from ahreas_mcp.configuracao import configuracao
 from ahreas_mcp.sessao import usuario as sessao
-from ahreas_mcp.soap.cliente import AhreasIndisponivel, Credencial, validar_credencial
+from ahreas_mcp.soap.cliente import Credencial
+from ahreas_mcp.telas.sessao_web import LoginWebRecusado, entrar
 
 _VALIDADE_CODE_SEGUNDOS = 5 * 60
 
@@ -58,13 +59,14 @@ class _Pendencia:
 
 
 class _CodeComCredencial:
-    """Um código de autorização já ligado a uma credencial validada."""
+    """Um código de autorização já ligado a uma credencial e à sessão web."""
 
-    __slots__ = ("code", "credencial")
+    __slots__ = ("code", "credencial", "web")
 
-    def __init__(self, code: AuthorizationCode, credencial: Credencial) -> None:
+    def __init__(self, code: AuthorizationCode, credencial: Credencial, web: Any) -> None:
         self.code = code
         self.credencial = credencial
+        self.web = web
 
 
 class AhreasAuthProvider(OAuthProvider):
@@ -104,7 +106,9 @@ class AhreasAuthProvider(OAuthProvider):
         # que a pessoa autentica com sucesso no Ahreas.
         return f"{configuracao().public_url}/ahreas/login?pedido={pedido}"
 
-    async def _emitir_code(self, pendencia: _Pendencia, credencial: Credencial) -> str:
+    async def _emitir_code(
+        self, pendencia: _Pendencia, credencial: Credencial, web: Any
+    ) -> str:
         params = pendencia.params
         valor = f"ac_{secrets.token_hex(24)}"
         code = AuthorizationCode(
@@ -117,7 +121,7 @@ class AhreasAuthProvider(OAuthProvider):
             code_challenge=params.code_challenge,
             resource=params.resource,
         )
-        self._codes[valor] = _CodeComCredencial(code, credencial)
+        self._codes[valor] = _CodeComCredencial(code, credencial, web)
         return construct_redirect_uri(str(params.redirect_uri), code=valor, state=params.state)
 
     async def load_authorization_code(
@@ -148,9 +152,10 @@ class AhreasAuthProvider(OAuthProvider):
             expires_at=expira,
             subject=entrada.credencial.usuario,
         )
-        # O token de acesso é a chave da sessão: a credencial do Ahreas vive
-        # aqui, em memória, e some quando o token expira ou é revogado.
-        sessao.abrir(token, entrada.credencial, vida)
+        # O token de acesso é a chave da sessão: a credencial do Ahreas e a
+        # sessão web vivem aqui, em memória, e somem quando o token expira ou é
+        # revogado.
+        sessao.abrir(token, entrada.credencial, vida, web=entrada.web)
         return OAuthToken(
             access_token=token,
             token_type="Bearer",
@@ -195,25 +200,28 @@ class AhreasAuthProvider(OAuthProvider):
     async def _post_login(self, request: Request) -> Response:
         form = await request.form()
         pedido = str(form.get("pedido", ""))
-        usuario = str(form.get("usuario", "")).strip()
+        email = str(form.get("usuario", "")).strip()
         senha = str(form.get("senha", ""))
         pendencia = self._pendencias.get(pedido)
         if pendencia is None:
             return HTMLResponse("Pedido de login inválido ou expirado.", status_code=400)
 
-        credencial = Credencial(usuario=usuario, senha=senha)
+        # O login web valida a credencial e abre a sessão do painel numa tacada.
+        # A mesma credencial serve para o web service (o Ahreas aceita o e-mail
+        # como usuário), então uma sessão cobre os dois modos.
+        credencial = Credencial(usuario=email, senha=senha)
         try:
-            aceito = await validar_credencial(credencial)
-        except AhreasIndisponivel:
+            web = await entrar(email, senha)
+        except LoginWebRecusado:
+            return HTMLResponse(
+                pagina_login(pedido, "E-mail ou senha incorretos."), status_code=200
+            )
+        except Exception:  # noqa: BLE001 - Ahreas fora do ar vira mensagem
             return HTMLResponse(
                 pagina_login(pedido, "O Ahreas não respondeu. Tente de novo em instantes."),
                 status_code=200,
             )
-        if not aceito:
-            return HTMLResponse(
-                pagina_login(pedido, "Usuário ou senha incorreto."), status_code=200
-            )
 
         self._pendencias.pop(pedido, None)
-        destino = await self._emitir_code(pendencia, credencial)
+        destino = await self._emitir_code(pendencia, credencial, web)
         return RedirectResponse(destino, status_code=303)

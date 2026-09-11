@@ -364,7 +364,26 @@ async def diagnostico() -> dict[str, Any]:
 
 
 async def _sessao_web() -> Any:
-    """A sessão web de quem está chamando (por ora, a do modo local)."""
+    """A sessão web de quem está chamando.
+
+    No remoto, é a sessão do painel aberta no login OAuth desta pessoa — assim as
+    telas agem no nome dela. No local (stdio), é a única sessão, aberta do
+    ambiente. Sessão remota vencida vira pedido de novo login.
+    """
+    from fastmcp.server.dependencies import get_access_token
+
+    try:
+        token = get_access_token()
+    except Exception:
+        token = None
+    if token is not None:
+        atual = sessao.obter(token.token)
+        if atual is None:
+            raise SessaoExpirada("Sua sessão do Ahreas expirou. Faça login novamente.")
+        if atual.web is None:
+            raise SessaoExpirada("Sua sessão do painel não está ativa. Faça login novamente.")
+        return atual.web
+
     from ahreas_mcp.telas.servico import sessao_stdio
 
     return await sessao_stdio()
