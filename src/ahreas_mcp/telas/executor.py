@@ -68,6 +68,9 @@ class Resultado:
     # Uma célula editável de grid por entrada: o campo (name) a preencher, o valor
     # atual e o texto da linha (bloco/unidade), para a IA saber o que é o quê.
     campos_editaveis: tuple[dict[str, str], ...] = field(default_factory=tuple)
+    # Uma ação por linha da grade (Alterar/Excluir/Consultar, links de postback):
+    # o `acao` a passar de volta para acionar aquela linha, o rótulo e a linha.
+    acoes_linha: tuple[dict[str, str], ...] = field(default_factory=tuple)
 
 
 def _extrair_mensagem(html: str) -> str | None:
@@ -81,13 +84,22 @@ def _extrair_mensagem(html: str) -> str | None:
     return texto or None
 
 
+_RE_DOPOSTBACK = re.compile(
+    r"__doPostBack\(&#39;([^&]*)&#39;,&#39;([^&]*)&#39;\)|__doPostBack\('([^']*)','([^']*)'\)"
+)
+
+
 class _Grid(HTMLParser):
-    """Extrai a primeira RadGrid da página: cabeçalho, texto e campos editáveis.
+    """Extrai a primeira RadGrid da página: cabeçalho, texto, campos e ações.
 
     O RadGrid marca cada linha com rgRow/rgAltRow e o cabeçalho com rgHeader.
-    Além do texto de cada célula, captura os inputs dentro das linhas (name e
-    valor) — é o que uma grid de edição (consumos, lançamentos em lote) usa, e o
-    que a IA precisa para preencher sem saber nada sobre a tela específica.
+    Além do texto de cada célula, captura de cada linha:
+    - os inputs editáveis (name e valor) — o que uma grade de edição (consumos,
+      lançamentos em lote) usa para preencher em massa;
+    - as ações por linha (botões Alterar/Excluir/Consultar, links de postback) —
+      o que a IA aciona para abrir/editar a linha, já que o botão fica DENTRO da
+      linha, não entre os botões nomeados da tela.
+    Tudo genérico: a IA opera sem saber nada sobre a tela específica.
     """
 
     def __init__(self) -> None:
@@ -95,10 +107,14 @@ class _Grid(HTMLParser):
         self.colunas: list[str] = []
         self.linhas: list[list[str]] = []
         self.campos: list[dict[str, str]] = []
+        self.acoes: list[dict[str, str]] = []
         self._na_celula = False
         self._celula: list[str] = []
         self._linha: list[str] = []
         self._linha_campos: list[tuple[str, str]] = []
+        # (alvo, argumento, rotulo) de cada ação da linha.
+        self._linha_acoes: list[list[str]] = []
+        self._no_link: list[str] | None = None  # acumula o texto do link atual
         self._tipo: str | None = None  # "header" ou "row"
 
     def handle_starttag(self, tag: str, attrs_list: list[tuple[str, str | None]]) -> None:
@@ -106,7 +122,8 @@ class _Grid(HTMLParser):
         classe = attrs.get("class") or ""
         if tag == "tr":
             if "rgRow" in classe or "rgAltRow" in classe:
-                self._tipo, self._linha, self._linha_campos = "row", [], []
+                self._tipo = "row"
+                self._linha, self._linha_campos, self._linha_acoes = [], [], []
         elif tag in ("td", "th") and self._tipo:
             self._na_celula, self._celula = True, []
         elif tag == "th" and "rgHeader" in classe:
@@ -114,34 +131,61 @@ class _Grid(HTMLParser):
         elif tag == "input" and self._tipo == "row":
             nome = attrs.get("name", "")
             tipo = (attrs.get("type") or "text").lower()
-            # Só campos de dados editáveis (não hidden do estado, não o pager).
-            if nome and tipo in ("text", "") and "Filtro" not in nome and "Pager" not in nome:
+            if not nome:
+                return
+            if tipo in ("text", "") and "Filtro" not in nome and "Pager" not in nome:
+                # Campo de dado editável (não hidden do estado, não o pager).
                 self._linha_campos.append((nome, attrs.get("value", "")))
+            elif tipo in ("image", "submit", "button"):
+                # Botão de ação da linha: o rótulo vem do alt/title/value.
+                rotulo = attrs.get("alt") or attrs.get("title") or attrs.get("value") or ""
+                self._linha_acoes.append([nome, "", rotulo])
+        elif tag == "a" and self._tipo == "row":
+            m = _RE_DOPOSTBACK.search(attrs.get("href", ""))
+            if m:
+                alvo = m.group(1) or m.group(3) or ""
+                arg = m.group(2) or m.group(4) or ""
+                self._no_link = []
+                self._linha_acoes.append([alvo, arg, ""])  # rótulo preenchido no </a>
 
     def handle_data(self, data: str) -> None:
         if self._na_celula:
             self._celula.append(data)
+        if self._no_link is not None:
+            self._no_link.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("td", "th") and self._na_celula:
+        if tag == "a" and self._no_link is not None:
+            rotulo = " ".join("".join(self._no_link).split())
+            if self._linha_acoes and not self._linha_acoes[-1][2]:
+                self._linha_acoes[-1][2] = rotulo
+            self._no_link = None
+        elif tag in ("td", "th") and self._na_celula:
             self._na_celula = False
             texto = " ".join("".join(self._celula).split())
             (self.colunas if self._tipo == "header" else self._linha).append(texto)
         elif tag == "tr" and self._tipo == "row":
             if any(c for c in self._linha):
                 self.linhas.append(self._linha)
-                rotulo = " ".join(c for c in self._linha[:3] if c)
+                # As 3 primeiras células com texto (pula colunas de botão/checkbox,
+                # que vêm vazias) — dá um identificador legível da linha.
+                rotulo = " ".join([c for c in self._linha if c][:3])
                 for nome, valor in self._linha_campos:
                     self.campos.append({"campo": nome, "valor": valor, "linha": rotulo})
+                for alvo, arg, rot in self._linha_acoes:
+                    if alvo:
+                        self.acoes.append(
+                            {"acao": alvo, "argumento": arg, "rotulo": rot, "linha": rotulo}
+                        )
             self._tipo = None
 
 
 def extrair_tabela(
     html: str, limite: int = 500
-) -> tuple[list[str], list[list[str]], list[dict[str, str]]]:
+) -> tuple[list[str], list[list[str]], list[dict[str, str]], list[dict[str, str]]]:
     g = _Grid()
     g.feed(html)
-    return g.colunas, g.linhas[:limite], g.campos[:limite]
+    return g.colunas, g.linhas[:limite], g.campos[:limite], g.acoes[:limite]
 
 
 # O campo de tamanho de página do RadGrid (UcPagerTemplate). Achá-lo é como se
@@ -235,7 +279,7 @@ def analisar_resultado(html: str) -> Resultado:
     """Lê a resposta de um postback: sucesso/erro, título, mensagem e grid."""
     titulo = _TITULO.search(html)
     mensagem = _extrair_mensagem(html)
-    colunas, linhas, campos = extrair_tabela(html)
+    colunas, linhas, campos, acoes = extrair_tabela(html)
     ok = not (mensagem and re.search(r"erro|inválid|falh|não foi", mensagem, re.I))
     return Resultado(
         ok=ok,
@@ -243,6 +287,7 @@ def analisar_resultado(html: str) -> Resultado:
         titulo=" ".join(titulo.group(1).split()) if titulo else None,
         tamanho=len(html),
         campos_editaveis=tuple(campos),
+        acoes_linha=tuple(acoes),
         html=html,
         colunas=tuple(colunas),
         linhas=tuple(tuple(linha) for linha in linhas),

@@ -453,6 +453,12 @@ def _resultado_tela(r: Any) -> dict[str, Any]:
         # em `campos`, o valor atual e a que linha pertence (bloco/unidade).
         saida["campos_editaveis"] = [dict(c) for c in r.campos_editaveis]
         saida["total_campos_editaveis"] = len(r.campos_editaveis)
+    if r.acoes_linha:
+        # As ações de cada linha da grade (Alterar/Excluir/Consultar/links): passe
+        # o `acao` de volta em executar_acao_tela (com continuar=true) para abrir
+        # ou editar aquela linha — o botão fica DENTRO da linha, não entre os
+        # botões nomeados da tela.
+        saida["acoes_linha"] = [dict(a) for a in r.acoes_linha]
     return saida
 
 
@@ -466,6 +472,9 @@ async def executar_acao_tela(
     continuar: Annotated[
         bool, "true para agir sobre o estado da ação anterior (encadear passos na mesma tela)."
     ] = False,
+    argumento: Annotated[
+        str, "Argumento da ação, quando vier em `acoes_linha` (links de postback). Vazio p/ botões."
+    ] = "",
     confirmar: Annotated[bool, "Obrigatório quando a ação altera o ERP."] = False,
 ) -> dict[str, Any]:
     """Aciona uma tela: preenche campos e dispara um botão, por HTTP.
@@ -475,7 +484,14 @@ async def executar_acao_tela(
     linhas (ex.: consumos, lançamentos em lote), TODAS as linhas vêm de uma vez
     (a paginação é expandida automaticamente) e os campos preenchíveis de cada
     linha voltam em `campos_editaveis` — informe-os todos de uma vez em `campos`
-    para gravar em massa. Consulta roda direto; ação que altera o ERP exige
+    para gravar em massa.
+
+    As ações que ficam DENTRO de cada linha da grade (Alterar/Excluir/Consultar,
+    links) voltam em `acoes_linha`: para abrir/editar uma linha, chame de novo com
+    `acao` = o `acao` de lá (e `argumento` se vier), `continuar=true`. É assim que
+    se abre a grade de edição por unidade de uma leitura: filtrar → pegar o
+    `acao` "Alterar" da linha em `acoes_linha` → acioná-lo → preencher
+    `campos_editaveis` → gravar. Consulta roda direto; ação que altera o ERP exige
     confirmar=true e AHREAS_PERMITIR_ESCRITA.
     """
     from ahreas_mcp.telas import executor
@@ -507,7 +523,7 @@ async def executar_acao_tela(
     try:
         sessao = await _sessao_web()
         resultado = await executor.executar(
-            sessao, caminho, campos or {}, acao, continuar=continuar
+            sessao, caminho, campos or {}, acao, argumento=argumento, continuar=continuar
         )
     except (LoginWebRecusado, TelaIndisponivel) as erro:
         return {"ok": False, "erro": {"codigo": "ahreas.tela.indisponivel", "mensagem": str(erro)}}

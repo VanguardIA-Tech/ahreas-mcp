@@ -66,7 +66,7 @@ def test_extrai_tabela_de_radgrid():
       <tr class="rgAltRow"><td>Apto 102</td><td>R$ 220,00</td></tr>
     </table>
     """
-    _, linhas, _ = executor.extrair_tabela(html)
+    _, linhas, _, _ = executor.extrair_tabela(html)
     assert linhas == [["Apto 101", "R$ 150,00"], ["Apto 102", "R$ 220,00"]]
 
 
@@ -78,8 +78,28 @@ def test_extrai_campos_editaveis_de_grid():
         <td><input type="text" name="ctl04$txtLeitura" value="85,16"/></td></tr>
     </table>
     """
-    _, _, campos = executor.extrair_tabela(html)
+    _, _, campos, _ = executor.extrair_tabela(html)
     assert campos == [{"campo": "ctl04$txtLeitura", "valor": "85,16", "linha": "AG-A 000101"}]
+
+
+def test_extrai_acoes_por_linha_da_grid():
+    # Cada linha traz botões de ação (Alterar/Consultar) e links de postback: a
+    # IA precisa do alvo para acionar a linha, já que o botão fica dentro dela.
+    html = """
+    <table>
+      <tr class="rgRow"><td>9797</td><td>2233</td><td>LIB</td>
+        <td><input type="image" name="rg$ctl04$imgbAlterar" alt="Alterar"/>
+            <input type="image" name="rg$ctl04$imgbConsultar" title="Consultar"/></td>
+        <td><a href="javascript:__doPostBack('rg$ctl04$lnkNum','X')">detalhe</a></td></tr>
+    </table>
+    """
+    _, _, _, acoes = executor.extrair_tabela(html)
+    alvos = {a["acao"]: a["rotulo"] for a in acoes}
+    assert alvos["rg$ctl04$imgbAlterar"] == "Alterar"
+    assert alvos["rg$ctl04$imgbConsultar"] == "Consultar"
+    assert alvos["rg$ctl04$lnkNum"] == "detalhe"
+    link = next(a for a in acoes if a["acao"] == "rg$ctl04$lnkNum")
+    assert link["argumento"] == "X" and link["linha"] == "9797 2233 LIB"
 
 
 def test_mensagem_ignora_lixo_de_script():
